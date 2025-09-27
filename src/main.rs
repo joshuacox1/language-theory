@@ -1,0 +1,27 @@
+use std::collections::HashSet;
+
+use cfg::{ContextFreeGrammar, Variable, Terminal, VarOrTerm,
+zv,zt,xv,xt};
+
+mod cfg;
+
+
+
+fn main() {
+    let mut test_grammar = ContextFreeGrammar::new(
+        [
+            (zv('S'), vec![xt('0')]),
+            (zv('S'), vec![xv('A')]),
+            (zv('A'), vec![xv('A'), xv('B')]),
+            (zv('B'), vec![xt('1')]),
+        ].into_iter().collect::<HashSet<_>>(),
+        zv('S'),
+    );
+    println!("{test_grammar:?}");
+
+    println!("Culling...");
+    test_grammar.cull_useless();
+
+    // for r in test_grammar
+    println!("{test_grammar:?}");
+}
