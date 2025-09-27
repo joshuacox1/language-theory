@@ -46,6 +46,7 @@ impl fmt::Debug for VarOrTerm {
 pub struct ContextFreeGrammar {
     rules: HashSet<(Variable, Vec<VarOrTerm>)>,
     start: Variable,
+    all_vars: HashSet<Variable>,
 }
 
 impl ContextFreeGrammar {
@@ -55,12 +56,24 @@ impl ContextFreeGrammar {
         rules: HashSet<(Variable, Vec<VarOrTerm>)>,
         start: Variable,
     ) -> Self {
-        Self { rules, start }
+        let mut all_vars = HashSet::new();
+        for (var, replacement) in &rules {
+            all_vars.insert(*var);
+            for t in replacement {
+                match t {
+                    Var(v) => { all_vars.insert(*v); },
+                    Term(t) => (),
+                };
+            }
+        }
+
+        Self { rules, start, all_vars }
     }
 
     /// Culls any useless variables and terminals from the grammar.
     /// Returns two sets: the set of
-    pub fn cull_useless(&mut self) {
+    pub fn cull_useless(&mut self) ->
+    (HashSet<Variable>, HashSet<Variable>) {
         // Compute all generating variables.
         let mut generating: HashSet<Variable> = HashSet::new();
         let mut change_this_iteration = true;
@@ -84,7 +97,8 @@ impl ContextFreeGrammar {
             }
         }
 
-        println!("{generating:?}");
+        // println!("Removing the following sad variables {:?}",
+        //     );
 
         // Remove all rules that mention non-generating variables.
         self.rules.retain(|(var, replacement)| {
@@ -95,7 +109,7 @@ impl ContextFreeGrammar {
                 })
         });
 
-        println!("{:?}", self);
+        let nongenerative = &self.all_vars - &generating;
 
         // Compute reachability for variables (and terminals??).
         let mut reachables: HashSet<Variable> = HashSet::new();
@@ -120,7 +134,9 @@ impl ContextFreeGrammar {
             }
         }
 
-        println!("{reachables:?}");
+        let unreachable = &generating - &reachables;
+
+        println!("## {unreachable:?}");
 
         // Remove all rules that mention unreachable variables.
         self.rules.retain(|(var, replacement)| {
@@ -130,12 +146,15 @@ impl ContextFreeGrammar {
                     Var(v) => reachables.contains(&v),
                 })
         });
+
+        (nongenerative, unreachable)
     }
 }
 
 impl fmt::Debug for ContextFreeGrammar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // For now.
+        write!(f, "{:?}\n", self.all_vars)?;
         write!(f, "{:?} is the start symbol\n", self.start)?;
         for (var, replacement) in &self.rules {
             write!(f, "{:?} -> ", var)?;
@@ -166,6 +185,8 @@ impl fmt::Debug for ContextFreeGrammar {
 mod test {
     use super::*;
 
+    // fn to_hashset()
+
     #[test] fn test_cull_useless() {
         // A is non-generative so the rules A -> AB and S -> A
         // are useless. Then it follows that B is unreachable
@@ -187,6 +208,7 @@ mod test {
             ].into_iter().collect::<HashSet<_>>(),
             zv('S'),
         );
+        // let expected_nongeneratives = ['A'].into_iter().
 
         test_grammar.cull_useless();
         assert_eq!(expected_grammar, test_grammar);
