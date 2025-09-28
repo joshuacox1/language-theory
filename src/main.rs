@@ -11,9 +11,11 @@ mod regexp;
 fn main() {
     use regexp::*;
     let nfa = Nfa::from_regexp(&example1());
-    println!("{nfa:?}");
+    println!("{}", nfa.to_graphviz());
     let dfa = Dfa::from_nfa(&nfa);
-    println!("{dfa:?}");
+    println!("{}", dfa.to_graphviz());
+    // println!("{dfa:?}");
+    // println!("{}", dfa_example1().show_string());
 }
 
 fn cfg_test_main() {

@@ -6,7 +6,7 @@
 //! We can use the regex crate to fuzz I guess?
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
+use std::fmt::{self, Write};
 
 use arrayvec::ArrayVec;
 use bit_set::BitSet;
@@ -403,7 +403,6 @@ impl Nfa {
                 f2x
             },
             RegExp::Alt(r1, r2) => {
-                // Save one state by just making q1 = q?
                 let q1x = self.fresh();
                 let q2x = self.fresh();
                 let q = &mut self.states[qx];
@@ -435,6 +434,27 @@ impl Nfa {
                 f2x
             },
         }
+    }
+
+    pub fn to_graphviz(&self) -> String {
+        let mut s = String::new();
+        s.push_str(concat!(
+            "digraph nfa {\n",
+            "    node [fontname=\"'Fira Mono'\"]\n",
+            "    edge [fontname=\"'Fira Mono'\"]\n",
+            "    rankdir=LR;\n",
+            "    node [shape = doublecircle]; ",
+        ));
+        writeln!(s, "{}", self.final_state());
+        s.push_str("    node [shape = circle];\n");
+        for (i,st) in self.states.iter().enumerate() {
+            for (j, c) in &st.transitions {
+                writeln!(s, "    {} -> {} [label = \"{}\"]",
+                    i, j, c.unwrap_or('*'));
+            }
+        }
+        s.push_str("}\n");
+        s
     }
 }
 
@@ -505,9 +525,8 @@ impl<'a> EpsilonClosureCache<'a> {
 #[derive(Debug, Clone)]
 pub struct Dfa {
     num_states: usize,
-    // From, to, etc. We will probably need a way to efficiently
-    // get this by node. For now just do this
-    edges: Vec<(usize, Char, usize)>,
+    // Not very cache local...
+    edges: HashMap<(usize, Char), usize>,
     // State bitset
     final_states: BitSet,
 }
@@ -521,7 +540,7 @@ impl Dfa {
         let mut dfa_states = HashMap::new();
         // with capacity related to NFA size?
         // delete type help
-        let mut edges: Vec<(usize, Char, usize)> = vec![];
+        let mut edges = HashMap::new();
 
         let start_b = cache.close_single(nfa.start_state());
         let start_idx = dfa_states.len(); // i.e. 0
@@ -560,7 +579,7 @@ impl Dfa {
                         dest_e_idx
                     },
                 };
-                edges.push((dfa_state_idx, *c, dest_e_idx));
+                edges.insert((dfa_state_idx, *c), dest_e_idx);
             }
         }
 
@@ -576,13 +595,90 @@ impl Dfa {
             final_states,
         }
     }
+
+    // prob delete
+    pub fn show_string(&self) -> String {
+
+        let mut z = HashMap::<usize, Vec<(Char, usize)>>::new();
+        for ((start, c), end) in &self.edges {
+            z.entry(*start)
+                .and_modify(|v| v.push((*c, *end)))
+                .or_insert_with(|| vec![(*c, *end)]);
+        }
+        // let mut z = z.into_iter().collect::<Vec<_>>();
+        // z.sort_unstable_by_key(|(idx,_)| *idx);
+
+        let mut s = String::new();
+        writeln!(s, "State | Final | Edges").unwrap();
+        for start in 0..self.num_states {
+            let fin = self.final_states.contains(start);
+            let fin_s = if fin { " Yes " } else { " No  " };
+            match z.get_mut(&start) {
+                None => {
+                    writeln!(s, "{start:5}   {fin_s}").unwrap();
+                },
+                Some(edges) => {
+                    edges.sort_unstable();
+                    let mut first = true;
+                    for (c, end) in edges {
+                        if first {
+                            writeln!(s, "{start:5}   {fin_s}   -- {c} -> {end:2}").unwrap();
+                            first = false;
+                        } else {
+                            writeln!(s, "                -- {c} -> {end:2}").unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        s
+    }
+
+    pub fn to_graphviz(&self) -> String {
+        let mut s = String::new();
+        s.push_str(concat!(
+            "digraph dfa {\n",
+            "    node [fontname=\"'Fira Mono'\"]\n",
+            "    edge [fontname=\"'Fira Mono'\"]\n",
+            "    rankdir=LR;\n",
+            "    node [shape = doublecircle];",
+        ));
+        for f in self.final_states.iter() {
+            write!(s, " {f}");
+        }
+        s.push_str("\n    node [shape = circle];\n");
+        // TODO: this won't draw vertices with no edges touching them.
+        // But they should hopefully
+        // never occur in this construction?
+        for ((i, c), j) in &self.edges {
+            writeln!(s, "    {} -> {} [label = \"{}\"]",
+                i, j, c);
+        }
+        s.push_str("}\n");
+        s
+    }
 }
 
+pub fn dfa_example1() -> Dfa {
+    let edges = [
+        ((0, 'a'), 1),
+        ((0, 'b'), 2),
+        ((1, 'a'), 1),
+        ((1, 'b'), 2),
+    ].into_iter().collect::<HashMap<_, _>>();
+    let final_states = [0,2].into_iter().collect::<BitSet>();
+    Dfa {
+        num_states: 3,
+        edges,
+        final_states,
+    }
+}
 
 pub fn example1() -> RegExp {
     // (ε|0*1)
-    // alt(eps, cnc(ast(lit('a')), lit('b')))
-    cnc(ast(lit('a')), lit('b'))
+    alt(eps, cnc(ast(lit('a')), lit('b')))
+    // cnc(ast(lit('a')), lit('b'))
 }
 
 // (0|(1(01*(00)*0)*1)*)*
