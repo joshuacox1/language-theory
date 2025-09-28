@@ -28,7 +28,7 @@ impl MyChar {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegExp {
     /// The empty set.
     Empty,
@@ -63,6 +63,176 @@ pub fn alt(r1: RegExp, r2: RegExp) -> RegExp {
 pub fn ast(r: RegExp) -> RegExp {
     RegExp::Star(Box::new(r))
 }
+
+
+// pub struct Parser {
+//     input: Vec<char>,
+//     idx: usize,
+// }
+
+// impl Parser {
+//     pub fn new(input: &str) -> Self {
+//         Self { input }
+//     }
+
+//     pub fn eat(&mut self, c: char) {
+//         assert!(
+//             match self.input.get(idx) {
+//                 Some(c_) if c_ == c => true,
+//                 _ => false,
+//             });
+//         self.idx += 1;
+//     }
+
+//     pub fn peek(&mut self) -> Option<char> {
+//         self.input.get(idx)
+//     }
+// }
+
+// fn expr_bp(b: &[char], idx: usize, min_bp: u8) -> RegExp {
+//     let mut lhs = match b.get(idx) {
+//         Some(c) => match c {
+//             '$' | '~' => {
+
+//             }
+//         }
+//     }
+
+
+//     loop {
+//         let q = match op {
+//             '|' =>
+//         };
+//     }
+// }
+
+
+
+
+
+
+
+fn parse_wrapper(s: &str) -> Result<RegExp, &'static str> {
+    parse_new_try(None, &s.chars().collect::<Vec<_>>(), 0)
+}
+
+fn parse_new_try(left: Option<RegExp>, buf: &[char], idx: usize)
+-> Result<RegExp, &'static str> {
+    // let right
+    // Check what to do with emptiness. It certainly isn't valid.
+    Ok(match buf[idx] {
+        '$' => {
+            let e = RegExp::Empty;
+            match left {
+                None => e,
+                Some(l) => RegExp::Concat(Box::new(l), Box::new(e)),
+            }
+        },
+        // '~' => {
+        //     // same as above
+        // }
+        '|' => match left {
+            Some(l) => {
+                let right = parse_new_try(None, buf, idx+1)?;
+                RegExp::Alt(Box::new(l), Box::new(right))
+            },
+            None => return Err("Can't start with a |")
+        },
+        '*' => match left {
+            Some(l) => RegExp::Star(Box::new(l)),
+            None => return Err("Can't start with a *")
+        },
+        // '?' =>
+        // '+' => ?,
+        // '(' => ,
+        // ')' => ???,
+        c => if c.is_ascii_alphanumeric() {
+            RegExp::Lit(c)
+        } else {
+            return Err("Unrecognised character WTF bro");
+        },
+    })
+}
+
+fn asrt(s: &str, exp: RegExp) { assert_eq!(parse_wrapper(s).unwrap(), exp); }
+fn asrt_f(s: &str) { parse_wrapper(s).unwrap_err(); }
+
+#[test]
+fn test_parse() {
+    asrt("s", RegExp::Lit('s'));
+    asrt_f("|");
+    asrt("$", RegExp::Empty);
+}
+
+
+
+
+
+
+// /// The stuff must be a correct regex
+// /// end exclusive
+// pub fn parse_regex(left: &RegExp, buf: &str) -> RegExp {
+//     // we are looking at a non-empty slice
+//     let l = buf.len()
+//     debug_assert!(l > 0);
+//     match c {
+//         '$' => {
+//             let e = RegExp::Empty;
+//             if l == 1 {
+//                 e
+//             } else {
+//                 RegExp::Concat(e, parse_regex(&buf[1..]))
+//             }
+//         },
+//         '~' => {
+//             // same as above
+//         }
+//         '|' => {
+//             parse_regex(None, &buf[1..])
+//         }
+//         '*' => RegExp::Star(left.clone()),
+//         // '?' =>
+//         // '+' => ?,
+//         '(' => ???,
+//         ')' => ???,
+//         _ => if c.is_ascii_alphanumeric() {
+//             RegExp::Lit(c),
+//         } else {
+//             return Err("Unrecognised character WTF bro");
+//         }
+//     }
+// }
+
+
+// impl TryFrom<&str> for RegExp {
+//     type Error = &'static str;
+
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         for c in value.chars() {
+//             // Need to think about brackets...
+//             match c {
+//                 '$' => RegExp::Empty()
+//                 '~' => RegExp::Epsilon(),
+//                 '|' => // or...,
+//                 '*' => RegExp::Star(),
+//                 // '?' =>
+//                 '+' => ?,
+//                 '(' => ???,
+//                 ')' => ???,
+//                 _ => if c.is_ascii_alphanumeric() {
+//                     RegExp::Lit(c),
+//                 } else {
+//                     return Err("Unrecognised character WTF bro");
+//                 }
+//             }
+//         }
+//     }
+// }
+
+
+
+
+
 
 
 
@@ -194,7 +364,7 @@ struct EpsilonClosureCache<'a> {
 }
 
 impl<'a> EpsilonClosureCache<'a> {
-    pub fn new(nfa: &Nfa) -> Self {
+    pub fn new(nfa: &'a Nfa) -> Self {
         Self {
             nfa,
             // Maybe don't allocate this? Use a hashmap?
@@ -217,10 +387,10 @@ impl<'a> EpsilonClosureCache<'a> {
             // recursively but it gets really grim in the presence
             // of cycles. Forget it.
             let mut b_eps = BitSet::with_capacity(self.nfa.states.len());
-            let stack = vec![b];
+            let mut stack = vec![b];
             while let Some(next) = stack.pop() {
                 b_eps.insert(next);
-                let n = self.nfa.states[next];
+                let n = &self.nfa.states[next];
                 for (neighbour, c) in &n.transitions {
                     if c.is_none() && !b_eps.contains(*neighbour) {
                         stack.push(*neighbour);
@@ -232,28 +402,29 @@ impl<'a> EpsilonClosureCache<'a> {
         }
 
         // TODO: express this better
-        &self.singleton_cache[b].unwrap()
+        &self.singleton_cache[b].as_ref().unwrap()
     }
 
     /// The epsilon closure of a set of NFA states.
     /// If it is not already in the cache, the epsilon closures
     /// of each individual state are unioned together and cached.
     pub fn close(&mut self, b: &BitSet) -> &BitSet {
-        self.cache.entry(b)
-            .or_insert_with(|| {
-                let mut b_eps = BitSet::with_capacity(self.nfa.states.len());
-                for item in b.iter() {
-                    let b_eps_part = self.close_single(item);
-                    b_eps.union_with(b_eps_part);
-                }
-                /*(b.clone(),*/&b_eps
-            })
+        if !self.cache.contains_key(b) {
+            let mut b_eps = BitSet::with_capacity(self.nfa.states.len());
+            for item in b.iter() {
+                let b_eps_part = self.close_single(item);
+                b_eps.union_with(b_eps_part);
+            }
+            self.cache.insert(b.clone(), b_eps);
+        }
+        self.cache.get(b).as_ref().unwrap()
     }
 }
 
 // subset construction
 
 /// A deterministic finite automaton.
+#[derive(Debug, Clone)]
 pub struct Dfa {
     num_states: usize,
     // From, to, etc. We will probably need a way to efficiently
@@ -264,9 +435,8 @@ pub struct Dfa {
 }
 
 impl Dfa {
-
-    /// subset construction.
-    fn from_nfa(nfa: &Nfa) -> Self {
+    /// The subset construction.
+    pub fn from_nfa(nfa: &Nfa) -> Self {
         // Map from state bitsets to epsilon-closed state bitsets.
         let mut cache = EpsilonClosureCache::new(nfa);
         // Map from epsilon-closed state bitsets to 0-blah indices.
@@ -276,19 +446,20 @@ impl Dfa {
         let mut edges: Vec<(usize, Char, usize)> = vec![];
 
         let start_b = cache.close_single(nfa.start_state());
-        dfa_states.insert((start_b.clone(), dfa_states.len()));
+        let start_idx = dfa_states.len(); // i.e. 0
+        dfa_states.insert(start_b.clone(), start_idx);
 
-        let stack = vec![start_b];
+        let mut stack = vec![(start_b.clone(), start_idx)];
         while let Some((dfa_state, dfa_state_idx)) = stack.pop() {
             // map from chars (non-epsilon) to bitsets of states
             // (non-epsilon-closured)
             let mut destinations = HashMap::new();
             for state in dfa_state.iter() {
-                for (neighbor, c) in nfa.states[state].transitions {
+                for (neighbor, c) in &nfa.states[state].transitions {
                     // No epsilon transitions
                     if let Some(c) = c {
-                        destinations.entry(&c)
-                            .and_modify(|b| b.insert(neighbor))
+                        destinations.entry(*c)
+                            .and_modify(|b: &mut BitSet| { b.insert(*neighbor); })
                             .or_insert_with(
                                 || BitSet::with_capacity(nfa.states.len()));
                     }
@@ -298,7 +469,7 @@ impl Dfa {
             for (c, dest) in &destinations {
                 let dest_e = cache.close(&dest);
                 let dest_e_idx = match dfa_states.get(dest_e) {
-                    Some(dest_e_idx) => dest_e_idx,
+                    Some(dest_e_idx) => *dest_e_idx,
                     None => {
                         // Perform the "visiting" here so we have an
                         // index to map to. This means we have to visit
@@ -307,18 +478,18 @@ impl Dfa {
                         let dest_e_idx = dfa_states.len();
                         dfa_states.insert(dest_e.clone(), dest_e_idx);
                         // Have to clone here. ^?
-                        stack.push((dest_e, dest_e_idx));
+                        stack.push((dest_e.clone(), dest_e_idx));
                         dest_e_idx
                     },
                 };
-                edges.insert((dfa_state_idx, *c, dest_e_idx));
+                edges.push((dfa_state_idx, *c, dest_e_idx));
             }
         }
 
         let nfa_final = nfa.final_state();
         let final_states = dfa_states.iter()
             .filter(|(b, _)| b.contains(nfa_final))
-            .map(|(_, idx)| idx)
+            .map(|(_, idx)| *idx)
             .collect::<BitSet>();
 
         Self {
@@ -332,7 +503,8 @@ impl Dfa {
 
 pub fn example1() -> RegExp {
     // (ε|0*1)
-    alt(eps, cnc(ast(lit('a')), lit('b')))
+    // alt(eps, cnc(ast(lit('a')), lit('b')))
+    cnc(ast(lit('a')), lit('b'))
 }
 
 // (0|(1(01*(00)*0)*1)*)*

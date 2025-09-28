@@ -11,7 +11,8 @@ mod regexp;
 fn main() {
     use regexp::*;
     let nfa = Nfa::from_regexp(&example1());
-    println!("{nfa:?}");
+    let dfa = Dfa::from_nfa(&nfa);
+    println!("{dfa:?}");
 }
 
 fn cfg_test_main() {
