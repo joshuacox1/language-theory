@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Variables: let's say strings.
@@ -44,9 +44,8 @@ impl fmt::Debug for VarOrTerm {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ContextFreeGrammar {
-    rules: HashSet<(Variable, Vec<VarOrTerm>)>,
+    rules_map: HashMap<Variable, HashSet<Vec<VarOrTerm>>>,
     start: Variable,
-    all_vars: HashSet<Variable>,
 }
 
 impl ContextFreeGrammar {
@@ -56,18 +55,23 @@ impl ContextFreeGrammar {
         rules: HashSet<(Variable, Vec<VarOrTerm>)>,
         start: Variable,
     ) -> Self {
-        let mut all_vars = HashSet::new();
-        for (var, replacement) in &rules {
-            all_vars.insert(*var);
-            for t in replacement {
-                match t {
-                    Var(v) => { all_vars.insert(*v); },
-                    Term(t) => (),
-                };
+        let mut rules_map = HashMap::new();
+        for (var, replacement) in rules {
+            for r in &replacement {
+                if let Var(v) = r {
+                    rules_map.entry(*v).or_insert_with(|| HashSet::new());
+                }
             }
+
+            rules_map
+                .entry(var)
+                .or_insert_with(|| HashSet::new())
+                .insert(replacement);
         }
 
-        Self { rules, start, all_vars }
+        rules_map.entry(start).or_insert_with(|| HashSet::new());
+
+        Self { rules_map, start }
     }
 
     /// Culls any useless variables and terminals from the grammar.
@@ -79,37 +83,51 @@ impl ContextFreeGrammar {
         let mut change_this_iteration = true;
         while change_this_iteration {
             change_this_iteration = false;
-            for (var, replacement) in &self.rules {
-                // If you had a very large number of rules it would
-                // be more efficient to take a copy of the rules
-                // and then remove. Could do it?
+            for (var, rules) in &self.rules_map {
                 if generating.contains(&var) {
                     continue;
                 }
-                let is_gen = replacement.iter().all(|t| match t {
-                    Term(_) => true,
-                    Var(v) => generating.contains(v),
-                });
-                if is_gen {
-                    generating.insert(*var);
-                    change_this_iteration = true;
+
+                for replacement in rules {
+                    let is_gen = replacement.iter().all(|t| match t {
+                        Term(_) => true,
+                        Var(v) => generating.contains(v),
+                    });
+                    if is_gen {
+                        generating.insert(*var);
+                        change_this_iteration = true;
+                        break;
+                    }
                 }
             }
         }
 
-        // println!("Removing the following sad variables {:?}",
-        //     );
+        let nongenerative = &self.rules_map.keys()
+            .map(|&k| k)
+            .collect::<HashSet<_>>() - &generating;
 
         // Remove all rules that mention non-generating variables.
-        self.rules.retain(|(var, replacement)| {
-            generating.contains(&var)
-                && replacement.iter().all(|t| match t {
-                    Term(_) => true,
-                    Var(v) => generating.contains(&v),
-                })
-        });
+        // Ensure the start variable is still there.
+        self.rules_map.retain(|var, rules| {
+            let isgen = generating.contains(&var);
+            if isgen {
+                // Only keep rules where all constituents are
+                // generative
+                rules.retain(|replacement| replacement.iter()
+                    .all(|t| match t {
+                        Term(_) => true,
+                        Var(v) => generating.contains(&v),
+                    }));
+            } else {
+                // Just bin it unless it's the start variable.
+                if *var == self.start {
+                    rules.clear();
+                    return true;
+                }
+            }
 
-        let nongenerative = &self.all_vars - &generating;
+            isgen
+        });
 
         // Compute reachability for variables (and terminals??).
         let mut reachables: HashSet<Variable> = HashSet::new();
@@ -122,12 +140,16 @@ impl ContextFreeGrammar {
         let mut change_this_iteration = true;
         while change_this_iteration {
             change_this_iteration = false;
-            for (var, replacement) in &self.rules {
+            for (var, rules) in &self.rules_map {
                 if reachables.contains(&var) {
-                    for t in replacement {
-                        if let Var(v) = t {
-                            reachables.insert(*v);
-                            change_this_iteration = true;
+                    for replacement in rules {
+                        for t in replacement {
+                            if let Var(v) = t {
+                                if !reachables.contains(v) {
+                                    reachables.insert(*v);
+                                    change_this_iteration = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -136,15 +158,25 @@ impl ContextFreeGrammar {
 
         let unreachable = &generating - &reachables;
 
-        println!("## {unreachable:?}");
+        self.rules_map.retain(|var, rules| {
+            let isreachable = reachables.contains(&var);
+            if isreachable {
+                // Only keep rules where all constituents are
+                // reachable
+                rules.retain(|replacement| replacement.iter()
+                    .all(|t| match t {
+                        Term(_) => true,
+                        Var(v) => reachables.contains(&v),
+                    }));
+            } else {
+                // Just bin it unless it's the start variable.
+                if *var == self.start {
+                    rules.clear();
+                    return true;
+                }
+            }
 
-        // Remove all rules that mention unreachable variables.
-        self.rules.retain(|(var, replacement)| {
-            reachables.contains(&var)
-                && replacement.iter().all(|t| match t {
-                    Term(_) => true,
-                    Var(v) => reachables.contains(&v),
-                })
+            isreachable
         });
 
         (nongenerative, unreachable)
@@ -154,12 +186,19 @@ impl ContextFreeGrammar {
 impl fmt::Debug for ContextFreeGrammar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // For now.
-        write!(f, "{:?}\n", self.all_vars)?;
         write!(f, "{:?} is the start symbol\n", self.start)?;
-        for (var, replacement) in &self.rules {
+        for (var, rules) in &self.rules_map {
             write!(f, "{:?} -> ", var)?;
-            for r in replacement {
-                write!(f, "{r:?}")?;
+            let mut first = true;
+            for replacement in rules {
+                if first {
+                    first = false;
+                } else {
+                    write!(f, " | ")?;
+                }
+                for r in replacement {
+                    write!(f, "{r:?}")?;
+                }
             }
             write!(f, "\n")?;
         }
@@ -171,6 +210,8 @@ impl fmt::Debug for ContextFreeGrammar {
 
 // Want to be told a few things:
 
+// Remove useless productions
+// LR(1)-ness?
 
 
 
@@ -184,8 +225,11 @@ impl fmt::Debug for ContextFreeGrammar {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::hash::Hash;
 
-    // fn to_hashset()
+    fn hashs<T: Eq + Hash, const N: usize>(ts: [T; N]) -> HashSet<T> {
+        ts.into_iter().collect::<HashSet<_>>()
+    }
 
     #[test] fn test_cull_useless() {
         // A is non-generative so the rules A -> AB and S -> A
@@ -193,24 +237,27 @@ mod test {
         // (note that this was only revealed after the generativity
         // check) so B -> 1 is useless, leaving only S -> 0.
         let mut test_grammar = ContextFreeGrammar::new(
-            [
+            hashs([
                 (zv('S'), vec![xt('0')]),
                 (zv('S'), vec![xv('A')]),
                 (zv('A'), vec![xv('A'), xv('B')]),
                 (zv('B'), vec![xt('1')]),
-            ].into_iter().collect::<HashSet<_>>(),
+            ]),
             zv('S'),
         );
 
         let expected_grammar = ContextFreeGrammar::new(
-            [
+            hashs([
                 (zv('S'), vec![xt('0')]),
-            ].into_iter().collect::<HashSet<_>>(),
+            ]),
             zv('S'),
         );
-        // let expected_nongeneratives = ['A'].into_iter().
+        let expected_nongeneratives = hashs([zv('A')]);
+        let expected_unreachables = hashs([zv('B')]);
 
-        test_grammar.cull_useless();
+        let (nongenerative, unreachable) = test_grammar.cull_useless();
         assert_eq!(expected_grammar, test_grammar);
+        assert_eq!(expected_nongeneratives, nongenerative);
+        assert_eq!(expected_unreachables, unreachable);
     }
 }
