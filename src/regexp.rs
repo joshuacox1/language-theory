@@ -41,10 +41,10 @@ pub enum RegExp {
     /// Alternation.
     Alt(Box<RegExp>, Box<RegExp>),
     Star(Box<RegExp>),
-    // Optional. Shorthand for (Epsilon|a).
-    // Opt(Box<RegExp>),
-    // Plus. Shorthand for aa*.
-    // Plus(Box<RegExp>),
+    /// Optional. Shorthand for (Epsilon|a).
+    Opt(Box<RegExp>),
+    /// Plus. Shorthand for aa*.
+    Plus(Box<RegExp>),
 }
 
 pub const emp: RegExp = RegExp::Empty;
@@ -459,6 +459,7 @@ impl Nfa {
 }
 
 /// Cache of epsilon closures of NFA state subsets.
+#[derive(Debug)]
 struct EpsilonClosureCache<'a> {
     nfa: &'a Nfa,
     singleton_cache: Vec<Option<BitSet>>,
@@ -548,20 +549,27 @@ impl Dfa {
 
         let mut stack = vec![(start_b.clone(), start_idx)];
         while let Some((dfa_state, dfa_state_idx)) = stack.pop() {
-            // map from chars (non-epsilon) to bitsets of states
-            // (non-epsilon-closured)
             let mut destinations = HashMap::new();
             for state in dfa_state.iter() {
                 for (neighbor, c) in &nfa.states[state].transitions {
                     // No epsilon transitions
                     if let Some(c) = c {
                         destinations.entry(*c)
-                            .and_modify(|b: &mut BitSet| { b.insert(*neighbor); })
-                            .or_insert_with(
-                                || BitSet::with_capacity(nfa.states.len()));
+                            .and_modify(|b: &mut BitSet| {
+                                b.insert(*neighbor);
+                            })
+                            .or_insert_with( || {
+                                let mut b = BitSet::with_capacity(
+                                    nfa.states.len(),
+                                );
+                                b.insert(*neighbor);
+                                b
+                            });
                     }
                 }
             }
+
+            // println!("!!! {destinations:?}");
 
             for (c, dest) in &destinations {
                 let dest_e = cache.close(&dest);
@@ -588,12 +596,32 @@ impl Dfa {
             .filter(|(b, _)| b.contains(nfa_final))
             .map(|(_, idx)| *idx)
             .collect::<BitSet>();
+        println!("{}", dfa_states.len());
 
         Self {
             num_states: dfa_states.len(),
             edges,
             final_states,
         }
+    }
+
+    /// Compute the minimal DFA (up to isomorphism).
+    pub fn minimise(&self) -> Self {
+        // Step 1 (unreachable states):
+        // The subset construction only created vertices reachable
+        // from the root and so automatically culled unreachable
+        // vertices from the NFA (which can arise due to $).
+        // So no raw reachability check is required.
+
+        // Step 2 (dead states):
+        // We may have made these, though. Multiple in fact (try `(b$)|a`).
+        // We will need to be careful to keep or recover the original
+        // state even if it is a dead state since it has special
+        // semantics as the start state.
+        // todo; remove dead states other than the start state
+
+        // Step 3: combine indistinguishable states
+
     }
 
     // prob delete
@@ -681,4 +709,65 @@ pub fn example1() -> RegExp {
     // cnc(ast(lit('a')), lit('b'))
 }
 
-// (0|(1(01*(00)*0)*1)*)*
+// N > 0
+fn cnc_arr<const N: usize>(arr: [RegExp; N]) -> RegExp {
+    arr.into_iter().reduce(cnc).unwrap()
+}
+
+pub fn example3() -> RegExp {
+    // cnc(emp, lit('b'))
+    alt(cnc(lit('b'), emp), lit('a'))
+}
+
+
+pub fn example2() -> RegExp {
+    // (0|(1(01*(00)*0)*1)*)*
+    // (1(01*0)*1|0)*
+    // divisble by 3???
+    cnc_arr([
+        lit('n'), lit('o'), ast(lit('o')), lit('p'), lit('e'),
+    ])
+    // ast(
+    //     alt(
+    //         cnc(
+    //             cnc(
+    //                 lit('1'),
+    //                 ast(
+    //                     cnc(
+    //                         cnc(
+    //                             lit('0'),
+    //                             ast(lit('1')),
+    //                         ),
+    //                         lit('0'),
+    //                     )
+    //                 )
+    //             ),
+    //             lit('1'),
+    //         ),
+    //         lit('0'),
+    //     )
+    // )
+    // ast(
+    //     alt(
+    //         lit('0'),
+    //         ast(cnc(
+    //             cnc(
+    //                 lit('1'),
+    //                 ast(
+    //                     cnc(
+    //                         cnc(
+    //                             cnc(
+    //                                 lit('0'),
+    //                                 ast(lit('1')),
+    //                             ),
+    //                             ast(cnc(lit('0'), lit('0'))),
+    //                         ),
+    //                         lit('0'),
+    //                     )
+    //                 )
+    //             ),
+    //             lit('1')
+    //         ))
+    //     )
+    // )
+}

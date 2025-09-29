@@ -10,7 +10,7 @@ mod regexp;
 
 fn main() {
     use regexp::*;
-    let nfa = Nfa::from_regexp(&example1());
+    let nfa = Nfa::from_regexp(&example3());
     println!("{}", nfa.to_graphviz());
     let dfa = Dfa::from_nfa(&nfa);
     println!("{}", dfa.to_graphviz());
