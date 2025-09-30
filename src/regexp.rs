@@ -33,7 +33,7 @@ impl MyChar {
 }
 
 
-#[derive(Debug, Clone/*, PartialEq, Eq*/)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegExp {
     /// The empty set.
     Empty,
@@ -52,6 +52,39 @@ pub enum RegExp {
     /// Plus. Shorthand for aa*.
     Plus(Box<RegExp>),
 }
+
+impl RegExp {
+    /// Note that the language induced by the regex may not contain
+    /// all characters mentioned in the regex due to Empty constraints.
+    /// For example, ($b)|a is equivalent to a.
+    /// We could do an optimisation here to compute inhabitance.
+    /// Might be worth doing. TODO
+    pub fn chars_mentioned(&self) -> HashSet<Char> {
+        let mut acc = HashSet::new();
+        self.chars_mentioned_rec(&mut acc);
+        acc
+    }
+
+    fn chars_mentioned_rec(&self, acc: &mut HashSet<Char>) {
+        match self {
+            RegExp::Empty | RegExp::Epsilon => (),
+            RegExp::Lit(c) => { acc.insert(*c); },
+            // Inhabitance...
+            RegExp::Concat(r1, r2) => {
+                r1.chars_mentioned_rec(acc);
+                r2.chars_mentioned_rec(acc);
+            },
+            RegExp::Alt(r1, r2) => {
+                r1.chars_mentioned_rec(acc);
+                r2.chars_mentioned_rec(acc);
+            },
+            RegExp::Star(r) => r.chars_mentioned_rec(acc),
+            RegExp::Opt(r) => r.chars_mentioned_rec(acc),
+            RegExp::Plus(r) => r.chars_mentioned_rec(acc),
+        }
+    }
+}
+
 
 
 
@@ -356,7 +389,9 @@ impl<'a> EpsilonClosureCache<'a> {
 // subset construction
 
 /// A deterministic finite automaton.
-#[derive(Debug, Clone)]
+/// We derive EQ (assuming edges is sorted, which it should be I guess,
+/// at least when we care about EQ)
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dfa {
     // The states will be 0 to n-1
     num_states: usize,
@@ -454,7 +489,7 @@ impl Dfa {
 
     /// Compute the minimal DFA (up to isomorphism).
     /// We will have computed the char set.
-    pub fn minimise(&self, alphabet: &[Char]) {
+    pub fn minimise(&self, alphabet: &[Char]) -> Self {
         // Step 1 (unreachable states):
         // The subset construction only created vertices reachable
         // from the root and so automatically culled unreachable
@@ -639,6 +674,8 @@ impl Dfa {
                 }
             }
         }
+
+        let num_states = canonical_permutation.len();
         assert!(!canonical_permutation.iter().any(|&q| q == usize::MAX));
         // Canonical start state is always zero
         let final_states = self.final_states.iter()
@@ -649,7 +686,7 @@ impl Dfa {
         for (i, sorted_es) in reduced_edges {
             let v_i = &mut canon_edges[canonical_permutation[i]];
             for (c,j) in sorted_es {
-                v_i.push((c,canonical_permutation[j]));
+                v_i.push((*c,canonical_permutation[j]));
             }
         }
         println!("Canon start state: 0");
@@ -659,6 +696,12 @@ impl Dfa {
             for (c,j) in v {
                 println!("{i}, {c}, {j}");
             }
+        }
+
+        Self {
+            num_states,
+            edges: canon_edges,
+            final_states,
         }
     }
 
@@ -860,4 +903,83 @@ pub fn example2() -> RegExp {
     //         ))
     //     )
     // )
+}
+
+
+
+
+pub fn canon_dfa(regexp: &RegExp) -> Dfa {
+    let nfa = Nfa::from_regexp(regexp);
+    let dfa = Dfa::from_nfa(&nfa);
+    // TODO fix this immediately
+    let canon_min_dfa = dfa.minimise(&vec!['a','b']);
+    canon_min_dfa
+}
+
+
+mod test {
+    use super::*;
+
+    #[test]
+    fn an_example() {
+        // TODO: Write the parser
+        let a_or_b_star = ast(alt(lit('a'), lit('b')));
+        let t_abb_t = cnc_arr([
+            a_or_b_star.clone(),
+            lit('a'), lit('b'), lit('b'),
+            a_or_b_star,
+        ]);
+        let expected_canonical_dfa = Dfa {
+            num_states: 4,
+            edges: vec![
+                vec![('a',1), ('b',0)],
+                vec![('a',1), ('b',2)],
+                vec![('a',1), ('b',3)],
+                vec![('a',3), ('b',3)],
+            ],
+            final_states: [3].into_iter().collect::<BitSet>(),
+        };
+
+        let actual_dfa = canon_dfa(&t_abb_t);
+        assert_eq!(expected_canonical_dfa, actual_dfa);
+    }
+
+    #[test]
+    fn regex_chars_1() {
+        // TODO: Write the parser
+        let abcd = cnc_arr([
+            lit('a'),
+            lit('b'),
+            lit('c'),
+            lit('d'),
+        ]);
+        let expected_inhab = ['a','b', 'c', 'd']
+            .into_iter().collect::<HashSet<_>>();
+        let actual_inhab = abcd.chars_mentioned();
+        assert_eq!(expected_inhab, actual_inhab);
+    }
+
+    #[test]
+    fn regex_chars_2() {
+        // TODO: Write the parser
+        let a_or_b_star = ast(alt(lit('a'), lit('b')));
+        let t_abb_t = cnc_arr([
+            a_or_b_star.clone(),
+            lit('a'), lit('b'), lit('b'),
+            a_or_b_star,
+        ]);
+        let expected_inhab = ['a','b'].into_iter().collect::<HashSet<_>>();
+        let actual_inhab = t_abb_t.chars_mentioned();
+        assert_eq!(expected_inhab, actual_inhab);
+    }
+
+    #[test]
+    fn regex_chars_uninhabited() {
+        // TODO: Write the parser
+        let only_a = alt(lit('a'), cnc(lit('b'), emp));
+        // Change this to 'a'
+        let expected_inhab = ['a'].into_iter().collect::<HashSet<_>>();
+        let actual_inhab = only_a.chars_mentioned();
+        assert_eq!(expected_inhab, actual_inhab);
+    }
 }

@@ -26,6 +26,7 @@ fn main() {
     dfa.minimise(&vec!['a','b','c']);
     // println!("{dfa:?}");
     // println!("{}", dfa_example1().show_string());
+    println!("{}", canon_dfa(&q).to_graphviz());
 }
 
 fn cfg_test_main() {
