@@ -11,24 +11,29 @@ use std::fmt::{self, Write};
 use arrayvec::ArrayVec;
 use bit_set::BitSet;
 
-// We can set this to whatever we want. Just do small numbers for now.
-// We can use u8 since we only want to support A-Za-z0-9 (possibly
-// a few ASCII symbols as well...). We can stuff epsilon in an unused
-// value as well when we need that.
-// For now stick with 'char'.
+// TODO: Swap to MyChar and remove the Option<...> for epsilons
 pub type Char = char;
 
 #[repr(transparent)]
 pub struct MyChar(u8);
 
 impl MyChar {
-    pub fn from_char(c: char) {
-        // assert ascii or epsilon
+    pub fn from_char(c: char) -> Result<Self, ()> {
+        if matches!(c, '$' | '~' | '*' | '?' | '+' | '|' | '(' | ')')
+                || c.is_ascii_alphanumeric() {
+            Ok(Self(c as u8))
+        } else {
+            Err(())
+        }
     }
+
+    pub const EPS: Self = Self('~' as u8);
+
+    pub fn to_char(self) -> char { self.0 as char }
 }
 
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone/*, PartialEq, Eq*/)]
 pub enum RegExp {
     /// The empty set.
     Empty,
@@ -40,212 +45,13 @@ pub enum RegExp {
     Concat(Box<RegExp>, Box<RegExp>),
     /// Alternation.
     Alt(Box<RegExp>, Box<RegExp>),
+    /// Zero or more.
     Star(Box<RegExp>),
     /// Optional. Shorthand for (Epsilon|a).
     Opt(Box<RegExp>),
     /// Plus. Shorthand for aa*.
     Plus(Box<RegExp>),
 }
-
-pub const emp: RegExp = RegExp::Empty;
-pub const eps: RegExp = RegExp::Epsilon;
-
-#[inline] pub fn lit(c: Char) -> RegExp { RegExp::Lit(c) }
-
-pub fn cnc(r1: RegExp, r2: RegExp) -> RegExp {
-    RegExp::Concat(Box::new(r1), Box::new(r2))
-}
-
-pub fn alt(r1: RegExp, r2: RegExp) -> RegExp {
-    RegExp::Alt(Box::new(r1), Box::new(r2))
-}
-
-pub fn ast(r: RegExp) -> RegExp { RegExp::Star(Box::new(r)) }
-pub fn opt(r: RegExp) -> RegExp { RegExp::Opt(Box::new(r)) }
-pub fn pls(r: RegExp) -> RegExp { RegExp::Plus(Box::new(r)) }
-
-
-// pub struct Parser {
-//     input: Vec<char>,
-//     idx: usize,
-// }
-
-// impl Parser {
-//     pub fn new(input: &str) -> Self {
-//         Self { input }
-//     }
-
-//     pub fn eat(&mut self, c: char) {
-//         assert!(
-//             match self.input.get(idx) {
-//                 Some(c_) if c_ == c => true,
-//                 _ => false,
-//             });
-//         self.idx += 1;
-//     }
-
-//     pub fn peek(&mut self) -> Option<char> {
-//         self.input.get(idx)
-//     }
-// }
-
-// fn expr_bp(b: &[char], idx: usize, min_bp: u8) -> RegExp {
-//     let mut lhs = match b.get(idx) {
-//         Some(c) => match c {
-//             '$' | '~' => {
-
-//             }
-//         }
-//     }
-
-
-//     loop {
-//         let q = match op {
-//             '|' =>
-//         };
-//     }
-// }
-
-
-
-
-pub struct Lexer {
-    // Consume it lazily?
-    input: Vec<char>,
-    idx: usize,
-}
-
-impl Lexer {
-    pub fn new(s: &str) -> Self {
-        Self { input: s.chars().collect::<Vec<_>>(), idx: 0 }
-    }
-
-    pub fn peek(&self) -> Option<char> {
-        self.input.get(self.idx).copied()
-    }
-
-    pub fn next(&mut self) {
-        self.idx += 1;
-    }
-}
-
-
-/// Not great :(
-fn parse_new_again(lexer: &mut Lexer) -> Result<RegExp, &'static str> {
-    let mut left = None;
-    while let Some(c) = lexer.peek() {
-        match c {
-            '$' => {
-                let e = RegExp::Empty;
-                left = Some(match left {
-                    None => e,
-                    Some(l) => RegExp::Concat(
-                        Box::new(l), Box::new(e),
-                    ),
-                });
-            },
-            '*' => match left {
-                Some(l) => {
-                    left = Some(RegExp::Star(Box::new(l)));
-                },
-                None => return Err("Can't start with a *"),
-            },
-            '|' => match left {
-                Some(l) => {
-                    lexer.next();
-                    let right = parse_new_again(lexer)?;
-                    left = Some(RegExp::Alt(Box::new(l), Box::new(right)));
-                },
-                None => return Err("Can't start with a |"),
-            },
-            c => if c.is_ascii_alphanumeric() {
-                let a = RegExp::Lit(c);
-                left = Some(match left {
-                    None => a,
-                    Some(l) => RegExp::Concat(
-                        Box::new(l), Box::new(a),
-                    ),
-                });
-            } else {
-                return Err("Unrecognised character!!!");
-            },
-        }
-        lexer.next();
-    }
-
-    match left {
-        None => Err("No left at all"),
-        Some(r) => Ok(r),
-    }
-}
-
-
-
-fn parse_wrapper(s: &str) -> Result<RegExp, &'static str> {
-    let mut lexer = Lexer::new(s);
-    parse_new_again(&mut lexer)
-}
-
-// fn parse_new_try(left: Option<RegExp>, buf: &[char], idx: usize)
-// -> Result<RegExp, &'static str> {
-//     // let right
-//     // Check what to do with emptiness. It certainly isn't valid.
-//     Ok(match buf[idx] {
-//         '$' => {
-//             let e = RegExp::Empty;
-//             match left {
-//                 None => e,
-//                 Some(l) => RegExp::Concat(Box::new(l), Box::new(e)),
-//             }
-//         },
-//         // '~' => {
-//         //     // same as above
-//         // }
-//         '|' => match left {
-//             Some(l) => {
-//                 let right = parse_new_try(None, buf, idx+1)?;
-//                 RegExp::Alt(Box::new(l), Box::new(right))
-//             },
-//             None => return Err("Can't start with a |")
-//         },
-//         '*' => match left {
-//             Some(l) => RegExp::Star(Box::new(l)),
-//             None => return Err("Can't start with a *")
-//         },
-//         // '?' =>
-//         // '+' => ?,
-//         // '(' => ,
-//         // ')' => ???,
-//         c => if c.is_ascii_alphanumeric() {
-//             RegExp::Lit(c)
-//         } else {
-//             return Err("Unrecognised character WTF bro");
-//         },
-//     })
-// }
-
-fn asrt(s: &str, exp: RegExp) { assert_eq!(parse_wrapper(s).unwrap(), exp); }
-fn asrt_f(s: &str) { parse_wrapper(s).unwrap_err(); }
-
-#[test]
-fn test_parse() {
-    asrt("s", lit('s'));
-    asrt_f("|");
-    asrt("$", emp);
-    asrt("a|b", alt(lit('a'), lit('b')));
-    asrt("ab", cnc(lit('a'), lit('b')));
-    asrt("a|bc", alt(lit('a'), cnc(lit('b'), lit('c'))));
-    asrt("ab|c", alt(cnc(lit('a'), lit('b')), lit('c')));
-    asrt("a*", ast(lit('a')));
-    asrt("a**", ast(ast(lit('a'))));
-    asrt("ab*", cnc(lit('a'), ast(lit('b'))));
-    asrt("ab*c", cnc(cnc(lit('a'), ast(lit('b'))), lit('c')));
-    asrt("a*bc", cnc(cnc(ast(lit('a')), lit('b')), lit('c')));
-    asrt("abc*", cnc(cnc(lit('a'), ast(lit('b'))), ast(lit('c'))));
-    // BAD: assume we can concat greedily when we can't.
-    // postfix unary operators bind more tightly
-}
-
 
 
 
@@ -637,100 +443,166 @@ impl Dfa<BitSet> {
         }
     }
 
-    // /// Compute the minimal DFA (up to isomorphism).
-    // /// We will have computed the char set.
-    // pub fn minimise(&self, alphabet: HashSet<Char>) -> Self {
-    //     // Step 1 (unreachable states):
-    //     // The subset construction only created vertices reachable
-    //     // from the root and so automatically culled unreachable
-    //     // vertices from the NFA (which can arise due to $).
-    //     // So no raw reachability check is required.
-    //     // If we have more general DFAs we will have to cull
-    //     // unreachable states. Can bring it into the below with more
-    //     // bookkeeping
+    /// Compute the minimal DFA (up to isomorphism).
+    /// We will have computed the char set.
+    pub fn minimise(&self, alphabet: &[Char]) {
+        // Step 1 (unreachable states):
+        // The subset construction only created vertices reachable
+        // from the root and so automatically culled unreachable
+        // vertices from the NFA (which can arise due to $).
+        // So no raw reachability check is required.
+        // If we have more general DFAs we will have to cull
+        // unreachable states. Can bring it into the below with more
+        // bookkeeping
 
-    //     // Step 2 (dead states):
-    //     // We may have made these, though. Multiple in fact (try `(b$)|a`).
-    //     // We will need to be careful to keep or recover the original
-    //     // state even if it is a dead state since it has special
-    //     // semantics as the start state.
-    //     let mut reachable = HashSet::new();
-    //     let mut stack = vec![];
-    //     // Backwards DFS from each final state.
-    //     for f in self.final_states {
-    //         if !reachable.contains(&f) {
-    //             stack.push(f);
-    //             while let Some(next) = stack.pop() {
-    //                 reachable.insert(next);
-    //                 // For each state such that state ---c--> next {
-    //                 let sources = todo!();
-    //                 for s in sources {
-    //                     if !reachable.contains(&s) {
-    //                         stack.push(s);
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     // If nothing was reachable, we can skip minimisation
-    //     // and canonicalisation below and just return the
-    //     // single default state with no edges and non-final.
-    //     if reachable.is_empty() {
-    //         todo!()
-    //     }
+        // Step 2 (dead states):
+        // We may have made these, though. Multiple in fact (try `(b$)|a`).
+        // We will need to be careful to keep or recover the original
+        // state even if it is a dead state since it has special
+        // semantics as the start state.
+        // let mut reachable = HashSet::new();
+        // let mut stack = vec![];
+        // // Backwards DFS from each final state.
+        // for f in self.final_states {
+        //     if !reachable.contains(&f) {
+        //         stack.push(f);
+        //         while let Some(next) = stack.pop() {
+        //             reachable.insert(next);
+        //             // For each state such that state ---c--> next {
+        //             let sources = todo!();
+        //             for s in sources {
+        //                 if !reachable.contains(&s) {
+        //                     stack.push(s);
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+        // If nothing was reachable, we can skip minimisation
+        // and canonicalisation below and just return the
+        // single default state with no edges and non-final.
+        // if reachable.is_empty() {
+        //     todo!()
+        // } else {
+        //     todo!()
+        // }
+        // let backwards_states = self.edges.iter()
+        //     .map(|((i, c), j)| (j, )
+        //     .collect::<Vec<_>>();
 
-    //     // Step 3: combine indistinguishable states using
-    //     // Hopcroft's algorithm.
+        let mut backw = HashMap::new();
+        for ((i,c),j) in self.edges.iter() {
+            backw.entry((*j,*c))
+                .and_modify(|v: &mut BitSet| { v.insert(*i); })
+                .or_insert_with(|| {
+                    let mut b = BitSet::new();
+                    b.insert(*i);
+                    b
+                });
+        }
+        println!("{backw:?}");
 
-    //     // TODO. This is a relatively naive implementation of
-    //     // Hopcroft's algorithm. It is not notably inefficient, but
-    //     // there exist specialist data structures for partition
-    //     // refinement.
-    //     let q = (0..self.num_states).collect::<BitSet>();
-    //     let f = self.final_states;
-    //     let q_bar_f = &q - f;
-    //     let mut p = HashSet::new();
-    //     p.insert(f.clone());
-    //     p.insert(q_bar_f.clone());
-    //     let mut w = HashSet::new();
-    //     p.insert(f);
-    //     p.insert(q_bar_f);
-    //     loop {
-    //         let a = w.iter().next();
-    //         w.remove(&a);
-    //         for c in alphabet {
-    //             let x = { s: s ---c---> a };
-    //             // For now make a fresh hashset every time.
-    //             // We will want to replace this with a dedicated
-    //             // partition refinement data structure.
-    //             let mut p_prime = HashSet::new();
-    //             for y in p.into_iter() {
-    //                 let o1 = &x & &y;
-    //                 let o2 = &y - &x;
-    //                 if !o1.is_empty() && o2.is_empty() {
-    //                     p_prime.insert(o1.clone());
-    //                     p_prime.insert(o2.clone());
+        // Step 3: combine indistinguishable states using
+        // Hopcroft's algorithm.
 
-    //                     if w.remove(y) {
-    //                         w.insert(o1.clone());
-    //                         w.insert(o2.clone());
-    //                     } else {
-    //                         if o1.len() <= o2.len() {
-    //                             w.insert(o1.clone());
-    //                         } else {
-    //                             w.insert(o2.clone());
-    //                         }
-    //                     }
-    //                 } else {
-    //                     p_prime.insert(y);
-    //                 }
-    //             }
-    //             p = p_prime;
-    //         }
-    //     }
+        // TODO. This is a relatively naive implementation of
+        // Hopcroft's algorithm. It is not notably inefficient, but
+        // there exist specialist data structures for partition
+        // refinement.
+        let q = (0..self.num_states).collect::<BitSet>();
+        let f = &self.final_states;
+        let q_bar_f = q.difference(&f).collect::<BitSet>();
+        let mut p = HashSet::new();
+        p.insert(f.clone());
+        p.insert(q_bar_f.clone());
+        let mut w = HashSet::new();
+        w.insert(f.clone());
+        w.insert(q_bar_f);
+        while let Some(a) = w.iter().next().cloned() {
+            println!("p: {p:?}, w: {w:?}, a: {a:?}");
+            w.remove(&a);
+            for c in alphabet {
+                // If there are no s such that s ---c--> a_i for a_i in a then
+                // there is no point dong any of the below because
+                // o1 will always be empty
+                let mut x = BitSet::new();
+                for a_ in a.iter() {
+                    if let Some(q) = backw.get(&(a_,*c)) {
+                        x.union_with(q);
+                    }
+                }
+                println!("x: {x:?}");
+                // For now make a fresh hashset every time.
+                // We will want to replace this with a dedicated
+                // partition refinement data structure.
+                let mut p_prime = HashSet::new();
+                for y in p.into_iter() {
+                    let o1 = x.intersection(&y).collect::<BitSet>();
+                    let o2 = y.difference(&x).collect::<BitSet>();
+                    if !o1.is_empty() && !o2.is_empty() {
+                        println!("o1: {o1:?}, o2: {o2:?}");
+                        p_prime.insert(o1.clone());
+                        p_prime.insert(o2.clone());
 
-    //     println!("{p:?}");
-    // }
+                        if w.remove(&y) {
+                            w.insert(o1.clone());
+                            w.insert(o2.clone());
+                        } else {
+                            if o1.len() <= o2.len() {
+                                w.insert(o1.clone());
+                            } else {
+                                w.insert(o2.clone());
+                            }
+                        }
+                    } else {
+                        p_prime.insert(y);
+                    }
+                }
+                p = p_prime;
+            }
+        }
+
+        println!("{p:?}");
+
+        // TODO: make this the actual representation in Dfa or something
+        let mut edge_lookup = HashMap::new();
+        for ((i,c),j) in self.edges.iter() {
+            edge_lookup.entry(*i)
+                .and_modify(|v: &mut Vec<_>| v.push((*c,*j)))
+                .or_insert_with(|| vec![(*c,*j)]);
+        }
+
+        // Make a vec to references to bitsets in P
+        let mut lookup = vec![usize::MAX; self.num_states];
+        for (i,partition) in p.iter().enumerate() {
+            for x in partition.iter() {
+                lookup[x] = i;
+            }
+        }
+
+        let mut reduced_edges = HashSet::new();
+        for partition in p.iter() {
+            // Arbitrary representative
+            let a = partition.iter().next().unwrap();
+            // All arrows from a (they will be the same from every rep)
+            if let Some(edges) = edge_lookup.get(&a) {
+                for (c,j) in edges.iter() {
+                    reduced_edges.insert((lookup[a], c, lookup[*j]));
+                }
+            }
+        }
+
+        for (i,c,j) in &reduced_edges {
+            println!("{i}, {c}, {j}");
+        }
+        let final_states = self.final_states.iter()
+            .map(|f| lookup[f])
+            .collect::<BitSet>();
+        println!("Start state: {:?}", lookup[0]);
+        println!("Final states: {:?}", final_states);
+
+        // Naming canonicalisation.
+    }
 
     // // prob delete
     // pub fn show_string(&self) -> String {
@@ -837,6 +709,29 @@ struct PartitionRefinement {
 //         }
 //     }
 // }
+
+
+
+
+// TEMP STUFF BEFORE I WRITE A PARSER
+
+
+pub const emp: RegExp = RegExp::Empty;
+pub const eps: RegExp = RegExp::Epsilon;
+
+#[inline] pub fn lit(c: Char) -> RegExp { RegExp::Lit(c) }
+
+pub fn cnc(r1: RegExp, r2: RegExp) -> RegExp {
+    RegExp::Concat(Box::new(r1), Box::new(r2))
+}
+
+pub fn alt(r1: RegExp, r2: RegExp) -> RegExp {
+    RegExp::Alt(Box::new(r1), Box::new(r2))
+}
+
+pub fn ast(r: RegExp) -> RegExp { RegExp::Star(Box::new(r)) }
+pub fn opt(r: RegExp) -> RegExp { RegExp::Opt(Box::new(r)) }
+pub fn pls(r: RegExp) -> RegExp { RegExp::Plus(Box::new(r)) }
 
 pub fn example1() -> RegExp {
     // (ε|0*1)

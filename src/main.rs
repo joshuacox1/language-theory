@@ -23,6 +23,7 @@ fn main() {
     println!("{}", nfa.to_graphviz());
     let dfa = Dfa::<BitSet>::from_nfa(&nfa);
     println!("{}", dfa.to_graphviz());
+    dfa.minimise(&vec!['a','b','c']);
     // println!("{dfa:?}");
     // println!("{}", dfa_example1().show_string());
 }
