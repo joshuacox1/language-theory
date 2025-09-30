@@ -357,16 +357,15 @@ impl<'a> EpsilonClosureCache<'a> {
 
 /// A deterministic finite automaton.
 #[derive(Debug, Clone)]
-pub struct Dfa<T> {
+pub struct Dfa {
     // The states will be 0 to n-1
     num_states: usize,
-    // Either empty or a num_states-sized vec of labels
-    edge_labels: Option<Vec<T>>,
-    edges: HashMap<(usize, Char), usize>,
+    // TODO: One buffer with start,len pointers in it for cache locality?
+    edges: Vec<Vec<(char, usize)>>,
     final_states: BitSet,
 }
 
-impl Dfa<BitSet> {
+impl Dfa {
     /// The subset construction.
     pub fn from_nfa(nfa: &Nfa) -> Self {
         // Map from state bitsets to epsilon-closed state bitsets.
@@ -375,7 +374,7 @@ impl Dfa<BitSet> {
         let mut dfa_states = HashMap::new();
         // with capacity related to NFA size?
         // delete type help
-        let mut edges = HashMap::new();
+        let mut edges = HashSet::new();
 
         let start_b = cache.close_single(nfa.start_state());
         let start_idx = dfa_states.len(); // i.e. 0
@@ -383,6 +382,9 @@ impl Dfa<BitSet> {
 
         let mut stack = vec![(start_b.clone(), start_idx)];
         while let Some((dfa_state, dfa_state_idx)) = stack.pop() {
+            // Can probably avoid the edges intermediate structure
+            // altogether since this number just goes up
+            println!("DFA_STATE_IDX: {dfa_state_idx}");
             let mut destinations = HashMap::new();
             for state in dfa_state.iter() {
                 for (neighbor, c) in &nfa.states[state].transitions {
@@ -419,7 +421,7 @@ impl Dfa<BitSet> {
                         dest_e_idx
                     },
                 };
-                edges.insert((dfa_state_idx, *c), dest_e_idx);
+                edges.insert((dfa_state_idx, *c, dest_e_idx));
             }
         }
 
@@ -435,10 +437,17 @@ impl Dfa<BitSet> {
         let dfa_states_result = dfa_states_indexed.into_iter()
             .map(|(s, _)| s)
             .collect::<Vec<_>>();
+        // TODO: return this somewhere.
+        println!("{dfa_states_result:?}");
+        let num_states = dfa_states_result.len();
+        let mut edge_vecs = (0..num_states)
+            .map(|_| vec![]).collect::<Vec<_>>();
+        for (i,c,j) in edges {
+            edge_vecs[i].push((c,j));
+        }
         Self {
             num_states: dfa_states_result.len(),
-            edge_labels: Some(dfa_states_result),
-            edges,
+            edges: edge_vecs,
             final_states,
         }
     }
@@ -491,14 +500,16 @@ impl Dfa<BitSet> {
         //     .collect::<Vec<_>>();
 
         let mut backw = HashMap::new();
-        for ((i,c),j) in self.edges.iter() {
-            backw.entry((*j,*c))
-                .and_modify(|v: &mut BitSet| { v.insert(*i); })
-                .or_insert_with(|| {
-                    let mut b = BitSet::new();
-                    b.insert(*i);
-                    b
-                });
+        for (i,v) in self.edges.iter().enumerate() {
+            for (c,j) in v {
+                backw.entry((*j,*c))
+                    .and_modify(|v: &mut BitSet| { v.insert(i); })
+                    .or_insert_with(|| {
+                        let mut b = BitSet::new();
+                        b.insert(i);
+                        b
+                    });
+            }
         }
         println!("{backw:?}");
 
@@ -566,10 +577,12 @@ impl Dfa<BitSet> {
 
         // TODO: make this the actual representation in Dfa or something
         let mut edge_lookup = HashMap::new();
-        for ((i,c),j) in self.edges.iter() {
-            edge_lookup.entry(*i)
-                .and_modify(|v: &mut Vec<_>| v.push((*c,*j)))
-                .or_insert_with(|| vec![(*c,*j)]);
+        for (i,v) in self.edges.iter().enumerate() {
+            for (c,j) in v {
+                edge_lookup.entry(i)
+                    .and_modify(|v: &mut Vec<_>| v.push((*c,*j)))
+                    .or_insert_with(|| vec![(*c,*j)]);
+            }
         }
 
         // Make a vec to references to bitsets in P
@@ -704,9 +717,11 @@ impl Dfa<BitSet> {
         // TODO: this won't draw vertices with no edges touching them.
         // But they should hopefully
         // never occur in this construction?
-        for ((i, c), j) in &self.edges {
-            writeln!(s, "    {} -> {} [label = \"{}\"]",
-                i, j, c);
+        for (i,v) in self.edges.iter().enumerate() {
+            for (c,j) in v {
+                writeln!(s, "    {} -> {} [label = \"{}\"]",
+                    i, j, c);
+            }
         }
         s.push_str("}\n");
         s
