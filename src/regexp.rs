@@ -580,28 +580,73 @@ impl Dfa<BitSet> {
             }
         }
 
-        let mut reduced_edges = HashSet::new();
+        let mut reduced_edges = HashMap::new();
         for partition in p.iter() {
             // Arbitrary representative
             let a = partition.iter().next().unwrap();
+            let mut items = vec![];
             // All arrows from a (they will be the same from every rep)
             if let Some(edges) = edge_lookup.get(&a) {
                 for (c,j) in edges.iter() {
-                    reduced_edges.insert((lookup[a], c, lookup[*j]));
+                    items.push((c, lookup[*j]));
+                }
+            }
+            // TOODO: Prevent the need for this by sorting
+            // earlier in edge_lookup
+            items.sort_unstable_by_key(|(c,_)| *c);
+            reduced_edges.insert(lookup[a], items);
+        }
+
+        for (i,es) in &reduced_edges {
+            for (c,j) in es {
+                println!("{i}, {c}, {j}");
+            }
+        }
+        println!("Start state: {:?}", lookup[0]);
+
+        // Naming canonicalisation.
+        println!("Visiting in order...");
+        let mut canonical_permutation = vec![usize::MAX; p.len()];
+        let mut visited = BitSet::with_capacity(self.num_states);
+        let start = lookup[0];
+        let mut stack = vec![start];
+        let mut idx = 0;
+        while let Some(next) = stack.pop() {
+            // Inverse permutation creating a lookup
+            canonical_permutation[next] = idx;
+            idx += 1;
+            visited.insert(next);
+            // Canonicity comes from this being sorted in alphabetical
+            // order of outgoing state character.
+            if let Some(sorted_es) = reduced_edges.get(&next) {
+                for (_,j) in sorted_es {
+                    if !visited.contains(*j) {
+                        stack.push(*j);
+                    }
                 }
             }
         }
-
-        for (i,c,j) in &reduced_edges {
-            println!("{i}, {c}, {j}");
-        }
+        assert!(!canonical_permutation.iter().any(|&q| q == usize::MAX));
+        // Canonical start state is always zero
         let final_states = self.final_states.iter()
-            .map(|f| lookup[f])
+            .map(|f| canonical_permutation[lookup[f]])
             .collect::<BitSet>();
-        println!("Start state: {:?}", lookup[0]);
-        println!("Final states: {:?}", final_states);
-
-        // Naming canonicalisation.
+        let mut canon_edges = (0..canonical_permutation.len())
+            .map(|_| vec![]).collect::<Vec<_>>();
+        for (i, sorted_es) in reduced_edges {
+            let v_i = &mut canon_edges[canonical_permutation[i]];
+            for (c,j) in sorted_es {
+                v_i.push((c,canonical_permutation[j]));
+            }
+        }
+        println!("Canon start state: 0");
+        println!("Canon final states: {final_states:?}");
+        println!("Canon edges:");
+        for (i,v) in canon_edges.iter().enumerate() {
+            for (c,j) in v {
+                println!("{i}, {c}, {j}");
+            }
+        }
     }
 
     // // prob delete
