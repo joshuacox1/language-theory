@@ -60,9 +60,9 @@ pub fn alt(r1: RegExp, r2: RegExp) -> RegExp {
     RegExp::Alt(Box::new(r1), Box::new(r2))
 }
 
-pub fn ast(r: RegExp) -> RegExp {
-    RegExp::Star(Box::new(r))
-}
+pub fn ast(r: RegExp) -> RegExp { RegExp::Star(Box::new(r)) }
+pub fn opt(r: RegExp) -> RegExp { RegExp::Opt(Box::new(r)) }
+pub fn pls(r: RegExp) -> RegExp { RegExp::Plus(Box::new(r)) }
 
 
 // pub struct Parser {
@@ -403,6 +403,10 @@ impl Nfa {
                 f2x
             },
             RegExp::Alt(r1, r2) => {
+                // You could save making a fresh node by embedding
+                // q in as one of the recursive start nodes. Unfortunately
+                // that could break the property that every node has 0
+                // to 2 exit transitions, which is useful for storage.
                 let q1x = self.fresh();
                 let q2x = self.fresh();
                 let q = &mut self.states[qx];
@@ -418,7 +422,6 @@ impl Nfa {
                 fx
             },
             RegExp::Star(r) => {
-                // (can't save anything here)
                 let q1x = self.fresh();
                 let f1x = self.create_rec(r, q1x);
                 let f2x = self.fresh();
@@ -431,6 +434,30 @@ impl Nfa {
                 let t = &mut q.transitions;
                 t.push((q1x, None));
                 t.push((f2x, None));
+                f2x
+            },
+            RegExp::Opt(r) => {
+                let q1x = self.fresh();
+                let f1x = self.create_rec(r, q1x);
+                let f2x = self.fresh();
+
+                let q_t = &mut self.states[qx].transitions;
+                q_t.push((q1x, None));
+                q_t.push((f2x, None));
+                self.states[f1x].transitions.push((f2x, None));
+                f2x
+            },
+            RegExp::Plus(r) => {
+                // Can save on making a node here: no need to make
+                // a q1 since we can embed q in.
+                // Like with star we can't embed the final node without
+                // breaking the max 2 transitions property.
+                let f1x = self.create_rec(r, qx);
+                let f2x = self.fresh();
+
+                let f1_t = &mut self.states[f1x].transitions;
+                f1_t.push((qx, None));
+                f1_t.push((f2x, None));
                 f2x
             },
         }
@@ -524,15 +551,16 @@ impl<'a> EpsilonClosureCache<'a> {
 
 /// A deterministic finite automaton.
 #[derive(Debug, Clone)]
-pub struct Dfa {
+pub struct Dfa<T> {
+    // The states will be 0 to n-1
     num_states: usize,
-    // Not very cache local...
+    // Either empty or a num_states-sized vec of labels
+    edge_labels: Option<Vec<T>>,
     edges: HashMap<(usize, Char), usize>,
-    // State bitset
     final_states: BitSet,
 }
 
-impl Dfa {
+impl Dfa<BitSet> {
     /// The subset construction.
     pub fn from_nfa(nfa: &Nfa) -> Self {
         // Map from state bitsets to epsilon-closed state bitsets.
@@ -569,8 +597,6 @@ impl Dfa {
                 }
             }
 
-            // println!("!!! {destinations:?}");
-
             for (c, dest) in &destinations {
                 let dest_e = cache.close(&dest);
                 let dest_e_idx = match dfa_states.get(dest_e) {
@@ -596,72 +622,154 @@ impl Dfa {
             .filter(|(b, _)| b.contains(nfa_final))
             .map(|(_, idx)| *idx)
             .collect::<BitSet>();
-        println!("{}", dfa_states.len());
 
+        let mut dfa_states_indexed = dfa_states.into_iter()
+            .collect::<Vec<_>>();
+        dfa_states_indexed.sort_unstable_by_key(|(_, idx)| *idx);
+        let dfa_states_result = dfa_states_indexed.into_iter()
+            .map(|(s, _)| s)
+            .collect::<Vec<_>>();
         Self {
-            num_states: dfa_states.len(),
+            num_states: dfa_states_result.len(),
+            edge_labels: Some(dfa_states_result),
             edges,
             final_states,
         }
     }
 
-    /// Compute the minimal DFA (up to isomorphism).
-    pub fn minimise(&self) -> Self {
-        // Step 1 (unreachable states):
-        // The subset construction only created vertices reachable
-        // from the root and so automatically culled unreachable
-        // vertices from the NFA (which can arise due to $).
-        // So no raw reachability check is required.
+    // /// Compute the minimal DFA (up to isomorphism).
+    // /// We will have computed the char set.
+    // pub fn minimise(&self, alphabet: HashSet<Char>) -> Self {
+    //     // Step 1 (unreachable states):
+    //     // The subset construction only created vertices reachable
+    //     // from the root and so automatically culled unreachable
+    //     // vertices from the NFA (which can arise due to $).
+    //     // So no raw reachability check is required.
+    //     // If we have more general DFAs we will have to cull
+    //     // unreachable states. Can bring it into the below with more
+    //     // bookkeeping
 
-        // Step 2 (dead states):
-        // We may have made these, though. Multiple in fact (try `(b$)|a`).
-        // We will need to be careful to keep or recover the original
-        // state even if it is a dead state since it has special
-        // semantics as the start state.
-        // todo; remove dead states other than the start state
+    //     // Step 2 (dead states):
+    //     // We may have made these, though. Multiple in fact (try `(b$)|a`).
+    //     // We will need to be careful to keep or recover the original
+    //     // state even if it is a dead state since it has special
+    //     // semantics as the start state.
+    //     let mut reachable = HashSet::new();
+    //     let mut stack = vec![];
+    //     // Backwards DFS from each final state.
+    //     for f in self.final_states {
+    //         if !reachable.contains(&f) {
+    //             stack.push(f);
+    //             while let Some(next) = stack.pop() {
+    //                 reachable.insert(next);
+    //                 // For each state such that state ---c--> next {
+    //                 let sources = todo!();
+    //                 for s in sources {
+    //                     if !reachable.contains(&s) {
+    //                         stack.push(s);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     // If nothing was reachable, we can skip minimisation
+    //     // and canonicalisation below and just return the
+    //     // single default state with no edges and non-final.
+    //     if reachable.is_empty() {
+    //         todo!()
+    //     }
 
-        // Step 3: combine indistinguishable states
+    //     // Step 3: combine indistinguishable states using
+    //     // Hopcroft's algorithm.
 
-    }
+    //     // TODO. This is a relatively naive implementation of
+    //     // Hopcroft's algorithm. It is not notably inefficient, but
+    //     // there exist specialist data structures for partition
+    //     // refinement.
+    //     let q = (0..self.num_states).collect::<BitSet>();
+    //     let f = self.final_states;
+    //     let q_bar_f = &q - f;
+    //     let mut p = HashSet::new();
+    //     p.insert(f.clone());
+    //     p.insert(q_bar_f.clone());
+    //     let mut w = HashSet::new();
+    //     p.insert(f);
+    //     p.insert(q_bar_f);
+    //     loop {
+    //         let a = w.iter().next();
+    //         w.remove(&a);
+    //         for c in alphabet {
+    //             let x = { s: s ---c---> a };
+    //             // For now make a fresh hashset every time.
+    //             // We will want to replace this with a dedicated
+    //             // partition refinement data structure.
+    //             let mut p_prime = HashSet::new();
+    //             for y in p.into_iter() {
+    //                 let o1 = &x & &y;
+    //                 let o2 = &y - &x;
+    //                 if !o1.is_empty() && o2.is_empty() {
+    //                     p_prime.insert(o1.clone());
+    //                     p_prime.insert(o2.clone());
 
-    // prob delete
-    pub fn show_string(&self) -> String {
+    //                     if w.remove(y) {
+    //                         w.insert(o1.clone());
+    //                         w.insert(o2.clone());
+    //                     } else {
+    //                         if o1.len() <= o2.len() {
+    //                             w.insert(o1.clone());
+    //                         } else {
+    //                             w.insert(o2.clone());
+    //                         }
+    //                     }
+    //                 } else {
+    //                     p_prime.insert(y);
+    //                 }
+    //             }
+    //             p = p_prime;
+    //         }
+    //     }
 
-        let mut z = HashMap::<usize, Vec<(Char, usize)>>::new();
-        for ((start, c), end) in &self.edges {
-            z.entry(*start)
-                .and_modify(|v| v.push((*c, *end)))
-                .or_insert_with(|| vec![(*c, *end)]);
-        }
-        // let mut z = z.into_iter().collect::<Vec<_>>();
-        // z.sort_unstable_by_key(|(idx,_)| *idx);
+    //     println!("{p:?}");
+    // }
 
-        let mut s = String::new();
-        writeln!(s, "State | Final | Edges").unwrap();
-        for start in 0..self.num_states {
-            let fin = self.final_states.contains(start);
-            let fin_s = if fin { " Yes " } else { " No  " };
-            match z.get_mut(&start) {
-                None => {
-                    writeln!(s, "{start:5}   {fin_s}").unwrap();
-                },
-                Some(edges) => {
-                    edges.sort_unstable();
-                    let mut first = true;
-                    for (c, end) in edges {
-                        if first {
-                            writeln!(s, "{start:5}   {fin_s}   -- {c} -> {end:2}").unwrap();
-                            first = false;
-                        } else {
-                            writeln!(s, "                -- {c} -> {end:2}").unwrap();
-                        }
-                    }
-                }
-            }
-        }
+    // // prob delete
+    // pub fn show_string(&self) -> String {
 
-        s
-    }
+    //     let mut z = HashMap::<usize, Vec<(Char, usize)>>::new();
+    //     for ((start, c), end) in &self.edges {
+    //         z.entry(*start)
+    //             .and_modify(|v| v.push((*c, *end)))
+    //             .or_insert_with(|| vec![(*c, *end)]);
+    //     }
+    //     // let mut z = z.into_iter().collect::<Vec<_>>();
+    //     // z.sort_unstable_by_key(|(idx,_)| *idx);
+
+    //     let mut s = String::new();
+    //     writeln!(s, "State | Final | Edges").unwrap();
+    //     for start in 0..self.num_states {
+    //         let fin = self.final_states.contains(start);
+    //         let fin_s = if fin { " Yes " } else { " No  " };
+    //         match z.get_mut(&start) {
+    //             None => {
+    //                 writeln!(s, "{start:5}   {fin_s}").unwrap();
+    //             },
+    //             Some(edges) => {
+    //                 edges.sort_unstable();
+    //                 let mut first = true;
+    //                 for (c, end) in edges {
+    //                     if first {
+    //                         writeln!(s, "{start:5}   {fin_s}   -- {c} -> {end:2}").unwrap();
+    //                         first = false;
+    //                     } else {
+    //                         writeln!(s, "                -- {c} -> {end:2}").unwrap();
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     s
+    // }
 
     pub fn to_graphviz(&self) -> String {
         let mut s = String::new();
@@ -688,20 +796,47 @@ impl Dfa {
     }
 }
 
-pub fn dfa_example1() -> Dfa {
-    let edges = [
-        ((0, 'a'), 1),
-        ((0, 'b'), 2),
-        ((1, 'a'), 1),
-        ((1, 'b'), 2),
-    ].into_iter().collect::<HashMap<_, _>>();
-    let final_states = [0,2].into_iter().collect::<BitSet>();
-    Dfa {
-        num_states: 3,
-        edges,
-        final_states,
-    }
+#[derive(Debug)]
+struct PartitionRefinementClass {
+    // Doubly-linked list pointers
+    left: usize,
+    right: usize,
+    // Where the items start in the buffer
+    item_header: usize,
+    split: usize, // We use usize::MAX as an Option as an optimisation
 }
+
+/// A partition refinement data structure on [0,...,N) for some N.
+#[derive(Debug)]
+struct PartitionRefinement {
+    // One index per state indicating the subset each state belongs to.
+    data: Vec<usize>,
+    // starts and ends.
+    // Logically a doubly linked list.
+    classes: Vec<PartitionRefinementClass>,
+}
+
+// impl PartitionRefinement {
+//     pub fn new(n: usize) {
+//         Self {
+//             data: vec![0; n],
+//         }
+//     }
+
+//     // precondition: every item in set is in [0,...,n).
+//     pub fn refine(&mut self, set: &BitSet) {
+//         for x in set.iter() {
+//             let s_x = self.data[x];
+//             if s_x.split == usize::MAX {
+//                 self.classes.push(PartitionRefinementClass {
+//                     // Where does it go?!
+//                 })
+//                 remove i from s_x
+//                 insert into split class for s_x
+//             }
+//         }
+//     }
+// }
 
 pub fn example1() -> RegExp {
     // (ε|0*1)
@@ -710,7 +845,7 @@ pub fn example1() -> RegExp {
 }
 
 // N > 0
-fn cnc_arr<const N: usize>(arr: [RegExp; N]) -> RegExp {
+pub fn cnc_arr<const N: usize>(arr: [RegExp; N]) -> RegExp {
     arr.into_iter().reduce(cnc).unwrap()
 }
 

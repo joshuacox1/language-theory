@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use bit_set::BitSet;
 
 use cfg::{ContextFreeGrammar, Variable, Terminal, VarOrTerm,
 zv,zt,xv,xt};
@@ -10,9 +11,17 @@ mod regexp;
 
 fn main() {
     use regexp::*;
-    let nfa = Nfa::from_regexp(&example3());
+
+    let q = cnc_arr([
+        ast(alt(lit('a'), lit('b'))),
+        lit('a'),
+        lit('b'),
+        lit('b'),
+        ast(alt(lit('a'), lit('b')))
+    ]);
+    let nfa = Nfa::from_regexp(&q);
     println!("{}", nfa.to_graphviz());
-    let dfa = Dfa::from_nfa(&nfa);
+    let dfa = Dfa::<BitSet>::from_nfa(&nfa);
     println!("{}", dfa.to_graphviz());
     // println!("{dfa:?}");
     // println!("{}", dfa_example1().show_string());
