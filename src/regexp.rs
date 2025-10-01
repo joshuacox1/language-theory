@@ -14,51 +14,31 @@ use bit_set::BitSet;
 // TODO: Swap to MyChar and remove the Option<...> for epsilons
 pub type Char = char;
 
-#[repr(transparent)]
-pub struct MyChar(u8);
-
-impl MyChar {
-    pub fn from_char(c: char) -> Result<Self, ()> {
-        if matches!(c, '$' | '~' | '*' | '?' | '+' | '|' | '(' | ')')
-                || c.is_ascii_alphanumeric() {
-            Ok(Self(c as u8))
-        } else {
-            Err(())
-        }
-    }
-
-    pub const EPS: Self = Self('~' as u8);
-
-    pub fn to_char(self) -> char { self.0 as char }
-}
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegExp {
     /// The empty set.
     Empty,
-    /// Sugar for Star(Empty).
+    /// The empty string language. Equivalent to $*.
     Epsilon,
-    /// The singleton set containing the singleton string of the given char.
+    /// The single character language.
     Lit(Char),
     /// Concatenation.
     Concat(Box<RegExp>, Box<RegExp>),
-    /// Alternation.
+    /// Union.
     Alt(Box<RegExp>, Box<RegExp>),
-    /// Zero or more.
+    /// Zero or more (Kleene star).
     Star(Box<RegExp>),
-    /// Optional. Shorthand for (Epsilon|a).
+    /// Zero or one. Equivalent to ~|r.
     Opt(Box<RegExp>),
-    /// Plus. Shorthand for aa*.
+    /// One or more. Equivalent to rr*.
     Plus(Box<RegExp>),
 }
 
 impl RegExp {
-    /// Note that the language induced by the regex may not contain
-    /// all characters mentioned in the regex due to Empty constraints.
-    /// For example, ($b)|a is equivalent to a.
-    /// We could do an optimisation here to compute inhabitance.
-    /// Might be worth doing. TODO
+    /// Returns all characters mentioned in the regex string.
+    /// Note that not all characters may be present in strings
+    /// accepted by the language. For example, ($b)|a recognises
+    /// no strings containing the character b.
     pub fn chars_mentioned(&self) -> HashSet<Char> {
         let mut acc = HashSet::new();
         self.chars_mentioned_rec(&mut acc);
@@ -69,7 +49,6 @@ impl RegExp {
         match self {
             RegExp::Empty | RegExp::Epsilon => (),
             RegExp::Lit(c) => { acc.insert(*c); },
-            // Inhabitance...
             RegExp::Concat(r1, r2) => {
                 r1.chars_mentioned_rec(acc);
                 r2.chars_mentioned_rec(acc);
@@ -83,79 +62,23 @@ impl RegExp {
             RegExp::Plus(r) => r.chars_mentioned_rec(acc),
         }
     }
+
+    /// Returns true if the language recognised by the regex
+    /// is empty. (This can be tested much more efficiently than
+    /// constructing a DFA).
+    pub fn inhabited(&self) -> bool {
+        match self {
+            RegExp::Empty => false,
+            RegExp::Epsilon => true,
+            RegExp::Lit(_) => true,
+            RegExp::Concat(r1, r2) => r1.inhabited() && r2.inhabited(),
+            RegExp::Alt(r1, r2) => r1.inhabited() || r2.inhabited(),
+            RegExp::Star(r) => true,
+            RegExp::Opt(r) => true,
+            RegExp::Plus(r) => r.inhabited(),
+        }
+    }
 }
-
-
-
-
-
-
-// /// The stuff must be a correct regex
-// /// end exclusive
-// pub fn parse_regex(left: &RegExp, buf: &str) -> RegExp {
-//     // we are looking at a non-empty slice
-//     let l = buf.len()
-//     debug_assert!(l > 0);
-//     match c {
-//         '$' => {
-//             let e = RegExp::Empty;
-//             if l == 1 {
-//                 e
-//             } else {
-//                 RegExp::Concat(e, parse_regex(&buf[1..]))
-//             }
-//         },
-//         '~' => {
-//             // same as above
-//         }
-//         '|' => {
-//             parse_regex(None, &buf[1..])
-//         }
-//         '*' => RegExp::Star(left.clone()),
-//         // '?' =>
-//         // '+' => ?,
-//         '(' => ???,
-//         ')' => ???,
-//         _ => if c.is_ascii_alphanumeric() {
-//             RegExp::Lit(c),
-//         } else {
-//             return Err("Unrecognised character WTF bro");
-//         }
-//     }
-// }
-
-
-// impl TryFrom<&str> for RegExp {
-//     type Error = &'static str;
-
-//     fn try_from(value: &str) -> Result<Self, Self::Error> {
-//         for c in value.chars() {
-//             // Need to think about brackets...
-//             match c {
-//                 '$' => RegExp::Empty()
-//                 '~' => RegExp::Epsilon(),
-//                 '|' => // or...,
-//                 '*' => RegExp::Star(),
-//                 // '?' =>
-//                 '+' => ?,
-//                 '(' => ???,
-//                 ')' => ???,
-//                 _ => if c.is_ascii_alphanumeric() {
-//                     RegExp::Lit(c),
-//                 } else {
-//                     return Err("Unrecognised character WTF bro");
-//                 }
-//             }
-//         }
-//     }
-// }
-
-
-
-
-
-
-
 
 /// Our NFAs are a bit special: they have only zero to two
 /// out transitions.
@@ -418,8 +341,8 @@ impl Dfa {
         let mut stack = vec![(start_b.clone(), start_idx)];
         while let Some((dfa_state, dfa_state_idx)) = stack.pop() {
             // Can probably avoid the edges intermediate structure
-            // altogether since this number just goes up
-            println!("DFA_STATE_IDX: {dfa_state_idx}");
+            // altogether since this number just goes up??? DOes it???
+            // println!("DFA_STATE_IDX: {dfa_state_idx}");
             let mut destinations = HashMap::new();
             for state in dfa_state.iter() {
                 for (neighbor, c) in &nfa.states[state].transitions {
@@ -473,7 +396,9 @@ impl Dfa {
             .map(|(s, _)| s)
             .collect::<Vec<_>>();
         // TODO: return this somewhere.
-        println!("{dfa_states_result:?}");
+        for (i,s) in dfa_states_result.iter().enumerate() {
+            println!("{i}: {s:?}");
+        }
         let num_states = dfa_states_result.len();
         let mut edge_vecs = (0..num_states)
             .map(|_| vec![]).collect::<Vec<_>>();
@@ -489,7 +414,7 @@ impl Dfa {
 
     /// Compute the minimal DFA (up to isomorphism).
     /// We will have computed the char set.
-    pub fn minimise(&self, alphabet: &[Char]) -> Self {
+    pub fn minimise(&self, alphabet: &HashSet<Char>) -> Self {
         // Step 1 (unreachable states):
         // The subset construction only created vertices reachable
         // from the root and so automatically culled unreachable
@@ -546,7 +471,6 @@ impl Dfa {
                     });
             }
         }
-        println!("{backw:?}");
 
         // Step 3: combine indistinguishable states using
         // Hopcroft's algorithm.
@@ -565,7 +489,6 @@ impl Dfa {
         w.insert(f.clone());
         w.insert(q_bar_f);
         while let Some(a) = w.iter().next().cloned() {
-            println!("p: {p:?}, w: {w:?}, a: {a:?}");
             w.remove(&a);
             for c in alphabet {
                 // If there are no s such that s ---c--> a_i for a_i in a then
@@ -577,7 +500,6 @@ impl Dfa {
                         x.union_with(q);
                     }
                 }
-                println!("x: {x:?}");
                 // For now make a fresh hashset every time.
                 // We will want to replace this with a dedicated
                 // partition refinement data structure.
@@ -586,7 +508,6 @@ impl Dfa {
                     let o1 = x.intersection(&y).collect::<BitSet>();
                     let o2 = y.difference(&x).collect::<BitSet>();
                     if !o1.is_empty() && !o2.is_empty() {
-                        println!("o1: {o1:?}, o2: {o2:?}");
                         p_prime.insert(o1.clone());
                         p_prime.insert(o2.clone());
 
@@ -607,8 +528,6 @@ impl Dfa {
                 p = p_prime;
             }
         }
-
-        println!("{p:?}");
 
         // TODO: make this the actual representation in Dfa or something
         let mut edge_lookup = HashMap::new();
@@ -639,41 +558,39 @@ impl Dfa {
                     items.push((c, lookup[*j]));
                 }
             }
-            // TOODO: Prevent the need for this by sorting
+            // TODO: Prevent the need for this by sorting
             // earlier in edge_lookup
             items.sort_unstable_by_key(|(c,_)| *c);
             reduced_edges.insert(lookup[a], items);
         }
-
-        for (i,es) in &reduced_edges {
-            for (c,j) in es {
-                println!("{i}, {c}, {j}");
-            }
-        }
-        println!("Start state: {:?}", lookup[0]);
+        println!("{reduced_edges:?}");
 
         // Naming canonicalisation.
-        println!("Visiting in order...");
         let mut canonical_permutation = vec![usize::MAX; p.len()];
         let mut visited = BitSet::with_capacity(self.num_states);
         let start = lookup[0];
         let mut stack = vec![start];
+        visited.insert(start);
         let mut idx = 0;
         while let Some(next) = stack.pop() {
+            println!("!! {next}");
             // Inverse permutation creating a lookup
             canonical_permutation[next] = idx;
             idx += 1;
-            visited.insert(next);
             // Canonicity comes from this being sorted in alphabetical
             // order of outgoing state character.
             if let Some(sorted_es) = reduced_edges.get(&next) {
-                for (_,j) in sorted_es {
+                // Iterate in reverse to put the earliest item
+                // next on the stack
+                for (_,j) in sorted_es.iter().rev() {
                     if !visited.contains(*j) {
+                        visited.insert(*j);
                         stack.push(*j);
                     }
                 }
             }
         }
+        println!("{canonical_permutation:?}");
 
         let num_states = canonical_permutation.len();
         assert!(!canonical_permutation.iter().any(|&q| q == usize::MAX));
@@ -683,18 +600,11 @@ impl Dfa {
             .collect::<BitSet>();
         let mut canon_edges = (0..canonical_permutation.len())
             .map(|_| vec![]).collect::<Vec<_>>();
+
         for (i, sorted_es) in reduced_edges {
             let v_i = &mut canon_edges[canonical_permutation[i]];
             for (c,j) in sorted_es {
                 v_i.push((*c,canonical_permutation[j]));
-            }
-        }
-        println!("Canon start state: 0");
-        println!("Canon final states: {final_states:?}");
-        println!("Canon edges:");
-        for (i,v) in canon_edges.iter().enumerate() {
-            for (c,j) in v {
-                println!("{i}, {c}, {j}");
             }
         }
 
@@ -857,9 +767,9 @@ pub fn example2() -> RegExp {
     // (0|(1(01*(00)*0)*1)*)*
     // (1(01*0)*1|0)*
     // divisble by 3???
-    cnc_arr([
-        lit('n'), lit('o'), ast(lit('o')), lit('p'), lit('e'),
-    ])
+    // cnc_arr([
+    //     lit('n'), lit('o'), ast(lit('o')), lit('p'), lit('e'),
+    // ])
     // ast(
     //     alt(
     //         cnc(
@@ -903,6 +813,23 @@ pub fn example2() -> RegExp {
     //         ))
     //     )
     // )
+    // (1(01*0)*1|0)+
+    pls(
+        alt(
+            cnc_arr([
+                lit('1'),
+                ast(
+                    cnc_arr([
+                        lit('0'),
+                        ast(lit('1')),
+                        lit('0'),
+                    ])
+                ),
+                lit('1'),
+            ]),
+            lit('0'),
+        )
+    )
 }
 
 
@@ -911,8 +838,7 @@ pub fn example2() -> RegExp {
 pub fn canon_dfa(regexp: &RegExp) -> Dfa {
     let nfa = Nfa::from_regexp(regexp);
     let dfa = Dfa::from_nfa(&nfa);
-    // TODO fix this immediately
-    let canon_min_dfa = dfa.minimise(&vec!['a','b']);
+    let canon_min_dfa = dfa.minimise(&regexp.chars_mentioned());
     canon_min_dfa
 }
 
@@ -921,7 +847,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn an_example() {
+    fn dfa_example() {
         // TODO: Write the parser
         let a_or_b_star = ast(alt(lit('a'), lit('b')));
         let t_abb_t = cnc_arr([
@@ -941,6 +867,23 @@ mod test {
         };
 
         let actual_dfa = canon_dfa(&t_abb_t);
+        assert_eq!(expected_canonical_dfa, actual_dfa);
+    }
+
+    #[test]
+    fn dfa_with_uninhabited() {
+        // Everyone's favourite nightmare counterexample
+        let only_a = alt(lit('a'), cnc(lit('b'), emp));
+        let expected_canonical_dfa = Dfa {
+            num_states: 2,
+            edges: vec![
+                vec![('a',1)],
+                vec![],
+            ],
+            final_states: [1].into_iter().collect::<BitSet>(),
+        };
+
+        let actual_dfa = canon_dfa(&only_a);
         assert_eq!(expected_canonical_dfa, actual_dfa);
     }
 

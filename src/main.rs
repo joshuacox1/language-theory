@@ -12,21 +12,28 @@ mod regexp;
 fn main() {
     use regexp::*;
 
-    let q = cnc_arr([
-        ast(alt(lit('a'), lit('b'))),
-        lit('a'),
-        lit('b'),
-        lit('b'),
-        ast(alt(lit('a'), lit('b')))
-    ]);
-    let nfa = Nfa::from_regexp(&q);
+    // let q = cnc_arr([
+    //     ast(alt(lit('a'), lit('b'))),
+    //     lit('a'),
+    //     lit('b'),
+    //     lit('b'),
+    //     ast(alt(lit('a'), lit('b')))
+    // ]);
+    // let only_a = alt(lit('a'), cnc(lit('b'), emp));
+    let r = alt(
+        alt(
+            alt(cnc(lit('w'),lit('o')), cnc(lit('a'),lit('b'))),
+        cnc(lit('z'),lit('o'))),
+        cnc(lit('q'),lit('q')));//example2();
+    let nfa = Nfa::from_regexp(&r);
     println!("{}", nfa.to_graphviz());
     let dfa = Dfa::from_nfa(&nfa);
     println!("{}", dfa.to_graphviz());
-    dfa.minimise(&vec!['a','b','c']);
+    let min_dfa = dfa.minimise(&r.chars_mentioned());
+    println!("{}", min_dfa.to_graphviz());
     // println!("{dfa:?}");
     // println!("{}", dfa_example1().show_string());
-    println!("{}", canon_dfa(&q).to_graphviz());
+    // println!("{}", canon_dfa(&q).to_graphviz());
 }
 
 fn cfg_test_main() {

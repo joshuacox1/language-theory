@@ -179,3 +179,87 @@ fn test_parse() {
     // BAD: assume we can concat greedily when we can't.
     // postfix unary operators bind more tightly
 }
+
+
+
+
+
+
+
+// /// The stuff must be a correct regex
+// /// end exclusive
+// pub fn parse_regex(left: &RegExp, buf: &str) -> RegExp {
+//     // we are looking at a non-empty slice
+//     let l = buf.len()
+//     debug_assert!(l > 0);
+//     match c {
+//         '$' => {
+//             let e = RegExp::Empty;
+//             if l == 1 {
+//                 e
+//             } else {
+//                 RegExp::Concat(e, parse_regex(&buf[1..]))
+//             }
+//         },
+//         '~' => {
+//             // same as above
+//         }
+//         '|' => {
+//             parse_regex(None, &buf[1..])
+//         }
+//         '*' => RegExp::Star(left.clone()),
+//         // '?' =>
+//         // '+' => ?,
+//         '(' => ???,
+//         ')' => ???,
+//         _ => if c.is_ascii_alphanumeric() {
+//             RegExp::Lit(c),
+//         } else {
+//             return Err("Unrecognised character WTF bro");
+//         }
+//     }
+// }
+
+
+// impl TryFrom<&str> for RegExp {
+//     type Error = &'static str;
+
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         for c in value.chars() {
+//             // Need to think about brackets...
+//             match c {
+//                 '$' => RegExp::Empty()
+//                 '~' => RegExp::Epsilon(),
+//                 '|' => // or...,
+//                 '*' => RegExp::Star(),
+//                 // '?' =>
+//                 '+' => ?,
+//                 '(' => ???,
+//                 ')' => ???,
+//                 _ => if c.is_ascii_alphanumeric() {
+//                     RegExp::Lit(c),
+//                 } else {
+//                     return Err("Unrecognised character WTF bro");
+//                 }
+//             }
+//         }
+//     }
+// }
+
+#[repr(transparent)]
+pub struct MyChar(u8);
+
+impl MyChar {
+    pub fn from_char(c: char) -> Result<Self, ()> {
+        if matches!(c, '$' | '~' | '*' | '?' | '+' | '|' | '(' | ')')
+                || c.is_ascii_alphanumeric() {
+            Ok(Self(c as u8))
+        } else {
+            Err(())
+        }
+    }
+
+    pub const EPS: Self = Self('~' as u8);
+
+    pub fn to_char(self) -> char { self.0 as char }
+}
