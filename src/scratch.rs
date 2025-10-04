@@ -263,3 +263,48 @@ impl MyChar {
 
     pub fn to_char(self) -> char { self.0 as char }
 }
+
+
+
+
+#[derive(Debug)]
+struct PartitionRefinementClass {
+    // Doubly-linked list pointers
+    left: usize,
+    right: usize,
+    // Where the items start in the buffer
+    item_header: usize,
+    split: usize, // We use usize::MAX as an Option as an optimisation
+}
+
+/// A partition refinement data structure on [0,...,N) for some N.
+#[derive(Debug)]
+struct PartitionRefinement {
+    // One index per state indicating the subset each state belongs to.
+    data: Vec<usize>,
+    // starts and ends.
+    // Logically a doubly linked list.
+    classes: Vec<PartitionRefinementClass>,
+}
+
+// impl PartitionRefinement {
+//     pub fn new(n: usize) {
+//         Self {
+//             data: vec![0; n],
+//         }
+//     }
+
+//     // precondition: every item in set is in [0,...,n).
+//     pub fn refine(&mut self, set: &BitSet) {
+//         for x in set.iter() {
+//             let s_x = self.data[x];
+//             if s_x.split == usize::MAX {
+//                 self.classes.push(PartitionRefinementClass {
+//                     // Where does it go?!
+//                 })
+//                 remove i from s_x
+//                 insert into split class for s_x
+//             }
+//         }
+//     }
+// }

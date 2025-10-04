@@ -1,82 +1,168 @@
-//! Messing about with a regular expression engine.
-//! Very simple:
-//! We take in a regular expression, construct the corresponding
-//! NFA, compute the corresponding DFA via the powerset contruction,
-//! then compute the (unique) minimal DFA matching the expression.
-//! We can use the regex crate to fuzz I guess?
+//! A fast toy regular expression engine. Compiles regular
+//! expressions to the unique minimal finite state machine
+//! up to isomorphism
+//! that recognises the equivalent language. By ordering states
+//! in a consistent way the resulting machine is canonical:
+//! two regular expressions recognise equal languages if and only if
+//! they have equal (not just isomorphic) finite state machines.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{self, Write};
 
 use arrayvec::ArrayVec;
 use bit_set::BitSet;
 
-// TODO: Swap to MyChar and remove the Option<...> for epsilons
-pub type Char = char;
+pub type RegExpError = String;
 
+/// Not sure if should derive this
+#[derive(PartialEq, Eq)]
+pub struct StateMachine(Dfa);
+
+impl StateMachine {
+    /// Compiles the `RegExp` to a finite state machine that recognises
+    /// the same language. This state machine is minimal (has the
+    /// fewest possible states) and canonical (meaning that two `RegExp`s
+    /// recognise the same language if and only if their state machines
+    /// are equal). This is a consequence of the [Myhill&ndash;Nerode
+    /// theorem](https://en.wikipedia.org/wiki/Myhill%E2%80%93Nerode_theorem)
+    /// and relabelling states consistently (in order of
+    /// the [shortlex](https://en.wikipedia.org/wiki/Shortlex_order)-earliest
+    /// word in that state's equivalence class).
+    /// Before I write a parser, only accept postfix notation.
+    pub fn new(regex_str: &str) -> Result<Self, RegExpError> {
+        let mut stack = Vec::with_capacity(regex_str.len());
+        for c in regex_str.chars() {
+
+            match c {
+                '$' => stack.push(RegExp::Empty),
+                '~' => stack.push(RegExp::Epsilon),
+                ',' => if stack.len() >= 2 {
+                    let r2 = stack.pop().unwrap();
+                    let r1 = stack.pop().unwrap();
+                    stack.push(RegExp::Concat(Box::new(r1), Box::new(r2)));
+                } else {
+                    return Err("No pair of redexes to apply , to".to_string());
+                },
+                '|' => if stack.len() >= 2 {
+                    let r2 = stack.pop().unwrap();
+                    let r1 = stack.pop().unwrap();
+                    stack.push(RegExp::Alt(Box::new(r1), Box::new(r2)));
+                } else {
+                    return Err("No pair of redexes to apply | to".to_string());
+                },
+                '*' => if stack.len() >= 1 {
+                    let r = stack.pop().unwrap();
+                    stack.push(RegExp::Star(Box::new(r)));
+                } else {
+                    return Err("No redex to apply * to".to_string());
+                },
+                '?' => if stack.len() >= 1 {
+                    let r = stack.pop().unwrap();
+                    stack.push(RegExp::Opt(Box::new(r)));
+                } else {
+                    return Err("No redex to apply ? to".to_string());
+                },
+                '+' => if stack.len() >= 1 {
+                    let r = stack.pop().unwrap();
+                    stack.push(RegExp::Plus(Box::new(r)));
+                } else {
+                    return Err("No redex to apply * to".to_string());
+                },
+                ' ' | '\n' | '\r' | '\t' => (),
+                _ => if c.is_ascii_alphanumeric() {
+                    stack.push(RegExp::Lit(c));
+                } else {
+                    return Err(format!("Unrecognised character {c}"));
+                }
+            }
+        }
+
+        match stack.len() {
+            0 => return Err("Nothing to reduce".to_string()),
+            i if i >= 2 => return Err("Too many redexes left over".to_string()),
+            _ => (),
+        }
+
+        let regexp = &stack[0];
+
+        let nfa = Nfa::from_regexp(regexp);
+        let dfa = Dfa::from_nfa(&nfa);
+        let canon_min_dfa = dfa.minimise(&regexp.chars());
+        Ok(Self(canon_min_dfa))
+    }
+
+    /// Decides whether the string matches the regex.
+    pub fn decide(&self, input: &str) -> bool { self.0.decide(input) }
+
+    /// Returns a string in valid graphviz (.gv) format showing
+    /// the structure of the state machine.
+    pub fn to_graphviz(&self) -> String { self.0.to_graphviz() }
+
+    /// Returns a string containing a valid Rust function with the
+    /// supplied name that recognises the function. Useful for
+    /// compile-time recogniser construction.
+    pub fn rust_codegen(&self, fn_name: &str) -> String {
+        self.0.rust_codegen(fn_name)
+    }
+}
+
+/// A regular expression.
+///
+/// Only `Empty`, `Lit`, `Concat`, `Alt` and `Star` are fundamental;
+/// `Epsilon`, `Opt` and `Plus` are derived forms.
+/// But they are common abbreviations and are also handled more
+/// efficiently than an equivalent decomposed form.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegExp {
-    /// The empty set.
+enum RegExp {
+    /// The empty language.
     Empty,
-    /// The empty string language. Equivalent to $*.
+    /// The empty string language. Equivalent to `Star(Empty)`.
     Epsilon,
-    /// The single character language.
-    Lit(Char),
+    /// The single character language for the given character.
+    Lit(char),
     /// Concatenation.
     Concat(Box<RegExp>, Box<RegExp>),
     /// Union.
     Alt(Box<RegExp>, Box<RegExp>),
     /// Zero or more (Kleene star).
     Star(Box<RegExp>),
-    /// Zero or one. Equivalent to ~|r.
+    /// Zero or one. `Opt(r)` is equivalent to `Alt(Epsilon, r)`.
     Opt(Box<RegExp>),
-    /// One or more. Equivalent to rr*.
+    /// One or more. `Plus(r)` is equivalent to `Concat(r, Star(r))`.
     Plus(Box<RegExp>),
 }
 
 impl RegExp {
-    /// Returns all characters mentioned in the regex string.
-    /// Note that not all characters may be present in strings
-    /// accepted by the language. For example, ($b)|a recognises
-    /// no strings containing the character b.
-    pub fn chars_mentioned(&self) -> HashSet<Char> {
+    fn chars(&self) -> HashSet<char> {
         let mut acc = HashSet::new();
-        self.chars_mentioned_rec(&mut acc);
+        self.chars_rec(&mut acc);
         acc
     }
 
-    fn chars_mentioned_rec(&self, acc: &mut HashSet<Char>) {
+    fn chars_rec(&self, acc: &mut HashSet<char>) {
         match self {
             RegExp::Empty | RegExp::Epsilon => (),
             RegExp::Lit(c) => { acc.insert(*c); },
             RegExp::Concat(r1, r2) => {
-                r1.chars_mentioned_rec(acc);
-                r2.chars_mentioned_rec(acc);
+                r1.chars_rec(acc);
+                r2.chars_rec(acc);
             },
             RegExp::Alt(r1, r2) => {
-                r1.chars_mentioned_rec(acc);
-                r2.chars_mentioned_rec(acc);
+                r1.chars_rec(acc);
+                r2.chars_rec(acc);
             },
-            RegExp::Star(r) => r.chars_mentioned_rec(acc),
-            RegExp::Opt(r) => r.chars_mentioned_rec(acc),
-            RegExp::Plus(r) => r.chars_mentioned_rec(acc),
+            RegExp::Star(r) => r.chars_rec(acc),
+            RegExp::Opt(r) => r.chars_rec(acc),
+            RegExp::Plus(r) => r.chars_rec(acc),
         }
     }
 
-    /// Returns true if the language recognised by the regex
-    /// is empty. (This can be tested much more efficiently than
-    /// constructing a DFA).
-    pub fn inhabited(&self) -> bool {
-        match self {
-            RegExp::Empty => false,
-            RegExp::Epsilon => true,
-            RegExp::Lit(_) => true,
-            RegExp::Concat(r1, r2) => r1.inhabited() && r2.inhabited(),
-            RegExp::Alt(r1, r2) => r1.inhabited() || r2.inhabited(),
-            RegExp::Star(r) => true,
-            RegExp::Opt(r) => true,
-            RegExp::Plus(r) => r.inhabited(),
-        }
+    /// TODO delete this once the tests are over
+    fn compile(&self) -> Dfa {
+        let nfa = Nfa::from_regexp(self);
+        let dfa = Dfa::from_nfa(&nfa);
+        let canon_min_dfa = dfa.minimise(&self.chars());
+        canon_min_dfa
     }
 }
 
@@ -84,9 +170,8 @@ impl RegExp {
 /// out transitions.
 #[derive(Debug, Clone)]
 struct NfaState {
-    // Use option to encode epsilon and otherwise use char...
-    // Use an arrayvec<2>?
-    transitions: ArrayVec<(usize, Option<Char>), 2>,
+    // TODO: stop using Option<char> and start using some u8
+    transitions: ArrayVec<(usize, Option<char>), 2>,
 }
 
 /// A non-deterministic finite automaton.
@@ -97,11 +182,9 @@ struct NfaState {
 /// always be a unique end state, which has the final index in the
 /// state vec.
 #[derive(Clone)]
-pub struct Nfa {
+struct Nfa {
     states: Vec<NfaState>,
 }
-
-fn fmt_nfa_state(s: &NfaState) {}
 
 impl fmt::Debug for Nfa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -121,17 +204,16 @@ impl fmt::Debug for Nfa {
 }
 
 impl Nfa {
-    pub fn from_regexp(regexp: &RegExp) -> Self {
+    fn from_regexp(regexp: &RegExp) -> Self {
         let mut s = Self { states: vec![] };
         let zero = s.fresh();
         let last = s.create_rec(regexp, zero);
-        // The final was always the last state created
+        assert_eq!(0, zero);
         assert_eq!(last, s.final_state());
         s
     }
 
     #[inline] fn start_state(&self) -> usize { 0 }
-    /// There is a unique accepting state
     #[inline] fn final_state(&self) -> usize { self.states.len() - 1 }
 
     fn fresh(&mut self) -> usize {
@@ -142,12 +224,9 @@ impl Nfa {
     }
 
     fn create_rec(&mut self, regexp: &RegExp, qx: usize) -> usize {
-        // let f = NfaState { trans1: None, trans2: None };
         match regexp {
             RegExp::Empty => {
-                // Don't even bother to connect the final state
-                let fx = self.fresh();
-                fx
+                self.fresh()
             }
             RegExp::Epsilon => {
                 let fx = self.fresh();
@@ -165,10 +244,6 @@ impl Nfa {
                 f2x
             },
             RegExp::Alt(r1, r2) => {
-                // You could save making a fresh node by embedding
-                // q in as one of the recursive start nodes. Unfortunately
-                // that could break the property that every node has 0
-                // to 2 exit transitions, which is useful for storage.
                 let q1x = self.fresh();
                 let q2x = self.fresh();
                 let q = &mut self.states[qx];
@@ -225,42 +300,42 @@ impl Nfa {
         }
     }
 
-    pub fn to_graphviz(&self) -> String {
-        let mut s = String::new();
-        s.push_str(concat!(
-            "digraph nfa {\n",
-            "    node [fontname=\"'Fira Mono'\"]\n",
-            "    edge [fontname=\"'Fira Mono'\"]\n",
-            "    rankdir=LR;\n",
-            "    node [shape = doublecircle]; ",
-        ));
-        writeln!(s, "{}", self.final_state());
-        s.push_str("    node [shape = circle];\n");
-        for (i,st) in self.states.iter().enumerate() {
-            for (j, c) in &st.transitions {
-                writeln!(s, "    {} -> {} [label = \"{}\"]",
-                    i, j, c.unwrap_or('*'));
-            }
-        }
-        s.push_str("}\n");
-        s
-    }
+    // TODO: Remove because it's debug-y stuff?
+    // pub fn to_graphviz(&self) -> String {
+    //     let mut s = String::new();
+    //     s.push_str(concat!(
+    //         "digraph nfa {\n",
+    //         "    node [fontname=\"'Fira Mono'\"]\n",
+    //         "    edge [fontname=\"'Fira Mono'\"]\n",
+    //         "    rankdir=LR;\n",
+    //         "    node [shape = doublecircle]; ",
+    //     ));
+    //     writeln!(s, "{}", self.final_state());
+    //     s.push_str("    node [shape = circle];\n");
+    //     for (i,st) in self.states.iter().enumerate() {
+    //         for (j, c) in &st.transitions {
+    //             writeln!(s, "    {} -> {} [label = \"{}\"]",
+    //                 i, j, c.unwrap_or('*'));
+    //         }
+    //     }
+    //     s.push_str("}\n");
+    //     s
+    // }
 }
 
 /// Cache of epsilon closures of NFA state subsets.
 #[derive(Debug)]
 struct EpsilonClosureCache<'a> {
     nfa: &'a Nfa,
-    singleton_cache: Vec<Option<BitSet>>,
+    singleton_cache: HashMap<usize, BitSet>,
     cache: HashMap<BitSet, BitSet>,
 }
 
 impl<'a> EpsilonClosureCache<'a> {
-    pub fn new(nfa: &'a Nfa) -> Self {
+    fn new(nfa: &'a Nfa) -> Self {
         Self {
             nfa,
-            // Maybe don't allocate this? Use a hashmap?
-            singleton_cache: vec![None; nfa.states.len()],
+            singleton_cache: HashMap::with_capacity(nfa.states.len()),
             cache: HashMap::new()
         }
     }
@@ -272,8 +347,10 @@ impl<'a> EpsilonClosureCache<'a> {
     /// One to think about. But the number of NFA states is linear
     /// in the size of the regex, while the DFA states are potentially
     /// exponential. So this term does not dominate.
-    pub fn close_single(&mut self, b: usize) -> &BitSet {
-        if let None = &mut self.singleton_cache[b] {
+    /// TODO: Implement this more cleverly without DFSing from
+    /// everything every time
+    fn close_single(&mut self, b: usize) -> &BitSet {
+        if let None = &mut self.singleton_cache.get(&b) {
             let mut b_eps = BitSet::with_capacity(self.nfa.states.len());
             let mut stack = vec![b];
             while let Some(next) = stack.pop() {
@@ -286,17 +363,17 @@ impl<'a> EpsilonClosureCache<'a> {
                 }
             }
 
-            self.singleton_cache[b] = Some(b_eps);
+            self.singleton_cache.insert(b, b_eps);
         }
 
-        // TODO: express this better
-        &self.singleton_cache[b].as_ref().unwrap()
+        // TODO: express all of this better if possible
+        &self.singleton_cache.get(&b).as_ref().unwrap()
     }
 
     /// The epsilon closure of a set of NFA states.
     /// If it is not already in the cache, the epsilon closures
     /// of each individual state are unioned together and cached.
-    pub fn close(&mut self, b: &BitSet) -> &BitSet {
+    fn close(&mut self, b: &BitSet) -> &BitSet {
         if !self.cache.contains_key(b) {
             let mut b_eps = BitSet::with_capacity(self.nfa.states.len());
             for item in b.iter() {
@@ -309,13 +386,11 @@ impl<'a> EpsilonClosureCache<'a> {
     }
 }
 
-// subset construction
-
 /// A deterministic finite automaton.
 /// We derive EQ (assuming edges is sorted, which it should be I guess,
 /// at least when we care about EQ)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Dfa {
+struct Dfa {
     // The states will be 0 to n-1
     num_states: usize,
     // TODO: One buffer with start,len pointers in it for cache locality?
@@ -325,28 +400,22 @@ pub struct Dfa {
 
 impl Dfa {
     /// The subset construction.
-    pub fn from_nfa(nfa: &Nfa) -> Self {
-        // Map from state bitsets to epsilon-closed state bitsets.
+    fn from_nfa(nfa: &Nfa) -> Self {
         let mut cache = EpsilonClosureCache::new(nfa);
-        // Map from epsilon-closed state bitsets to 0-blah indices.
         let mut dfa_states = HashMap::new();
-        // with capacity related to NFA size?
-        // delete type help
         let mut edges = HashSet::new();
 
         let start_b = cache.close_single(nfa.start_state());
-        let start_idx = dfa_states.len(); // i.e. 0
+        let start_idx = 0;
         dfa_states.insert(start_b.clone(), start_idx);
 
         let mut stack = vec![(start_b.clone(), start_idx)];
         while let Some((dfa_state, dfa_state_idx)) = stack.pop() {
-            // Can probably avoid the edges intermediate structure
-            // altogether since this number just goes up??? DOes it???
-            // println!("DFA_STATE_IDX: {dfa_state_idx}");
+            // For this epsilon-closed subset compute the destination
+            // subset from transitions by each character.
             let mut destinations = HashMap::new();
             for state in dfa_state.iter() {
                 for (neighbor, c) in &nfa.states[state].transitions {
-                    // No epsilon transitions
                     if let Some(c) = c {
                         destinations.entry(*c)
                             .and_modify(|b: &mut BitSet| {
@@ -363,18 +432,17 @@ impl Dfa {
                 }
             }
 
+            // Epsilon close each destination subset and add an
+            // edge from this by the given character to that. If this
+            // is not in the epsilon closure cache it is a new
+            // DFA state and it should be added to the stack.
             for (c, dest) in &destinations {
                 let dest_e = cache.close(&dest);
                 let dest_e_idx = match dfa_states.get(dest_e) {
                     Some(dest_e_idx) => *dest_e_idx,
                     None => {
-                        // Perform the "visiting" here so we have an
-                        // index to map to. This means we have to visit
-                        // the initial state separately instead of at the
-                        // start of the loop
                         let dest_e_idx = dfa_states.len();
                         dfa_states.insert(dest_e.clone(), dest_e_idx);
-                        // Have to clone here. ^?
                         stack.push((dest_e.clone(), dest_e_idx));
                         dest_e_idx
                     },
@@ -395,10 +463,7 @@ impl Dfa {
         let dfa_states_result = dfa_states_indexed.into_iter()
             .map(|(s, _)| s)
             .collect::<Vec<_>>();
-        // TODO: return this somewhere.
-        for (i,s) in dfa_states_result.iter().enumerate() {
-            println!("{i}: {s:?}");
-        }
+
         let num_states = dfa_states_result.len();
         let mut edge_vecs = (0..num_states)
             .map(|_| vec![]).collect::<Vec<_>>();
@@ -412,9 +477,8 @@ impl Dfa {
         }
     }
 
-    /// Compute the minimal DFA (up to isomorphism).
-    /// We will have computed the char set.
-    pub fn minimise(&self, alphabet: &HashSet<Char>) -> Self {
+    /// Canonicalises by shortlex while we're at it
+    fn minimise(&self, alphabet: &HashSet<char>) -> Self {
         // Step 1 (unreachable states):
         // The subset construction only created vertices reachable
         // from the root and so automatically culled unreachable
@@ -429,36 +493,57 @@ impl Dfa {
         // We will need to be careful to keep or recover the original
         // state even if it is a dead state since it has special
         // semantics as the start state.
-        // let mut reachable = HashSet::new();
-        // let mut stack = vec![];
-        // // Backwards DFS from each final state.
-        // for f in self.final_states {
-        //     if !reachable.contains(&f) {
-        //         stack.push(f);
-        //         while let Some(next) = stack.pop() {
-        //             reachable.insert(next);
-        //             // For each state such that state ---c--> next {
-        //             let sources = todo!();
-        //             for s in sources {
-        //                 if !reachable.contains(&s) {
-        //                     stack.push(s);
-        //                 }
-        //             }
-        //         }
+        // TODO: should this just be how the edge map works.
+        // In the sense that we don't have to unify the DFA rep
+        // for the intermediate DFA and the final DFA.
+        let mut should_this_just = HashMap::new();
+        for (i,v) in self.edges.iter().enumerate() {
+            for (_,j) in v {
+                should_this_just.entry(*j)
+                    .and_modify(|v: &mut Vec<_>| { v.push(i); })
+                    .or_insert_with(|| { vec![i]});
+            }
+        };
+
+        // 2. Dead state removal.
+        // Backwards DFS from each final state.
+        let mut dead_states = (0..self.num_states).collect::<BitSet>();
+        let mut stack = vec![];
+        for f in &self.final_states {
+            if dead_states.contains(f) {
+                stack.push(f);
+                while let Some(next) = stack.pop() {
+                    dead_states.remove(next);
+                    // For each state such that state ---c--> next {
+                    // let sources = todo!();
+                    if let Some(ss) = should_this_just.get(&next) {
+                        for s in ss {
+                            if dead_states.contains(*s) {
+                                stack.push(*s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Now this is the problem. We have a bitset of dead
+        // states, but we can't efficiently remove states because
+        // our DFA representation is unhelpful. TODO: fix this.
+        // I think we will need to change the DFA representation
+        // to be less fixed. Probably hashsets with not-necessarily
+        // contiguous int IDs...
+        // If the start state is dead, don't remove it because it's
+        // special (semantically it needs to exist). In this case
+        // we have the empty language and we can return early.
+        // if dead_states.contains(0) {
+        //     return Dfa {
+        //         num_states: 1,
+        //         edges: vec![],
+        //         final_states: BitSet::new(),
         //     }
         // }
-        // If nothing was reachable, we can skip minimisation
-        // and canonicalisation below and just return the
-        // single default state with no edges and non-final.
-        // if reachable.is_empty() {
-        //     todo!()
-        // } else {
-        //     todo!()
-        // }
-        // let backwards_states = self.edges.iter()
-        //     .map(|((i, c), j)| (j, )
-        //     .collect::<Vec<_>>();
 
+        // Map of {i : i ---c--> j} for all (j,c).
         let mut backw = HashMap::new();
         for (i,v) in self.edges.iter().enumerate() {
             for (c,j) in v {
@@ -483,26 +568,25 @@ impl Dfa {
         let f = &self.final_states;
         let q_bar_f = q.difference(&f).collect::<BitSet>();
         let mut p = HashSet::new();
-        p.insert(f.clone());
-        p.insert(q_bar_f.clone());
         let mut w = HashSet::new();
-        w.insert(f.clone());
-        w.insert(q_bar_f);
+        if !f.is_empty() {
+            p.insert(f.clone());
+            w.insert(f.clone());
+        }
+        if !q_bar_f.is_empty() {
+            p.insert(q_bar_f.clone());
+            w.insert(q_bar_f);
+        }
         while let Some(a) = w.iter().next().cloned() {
             w.remove(&a);
             for c in alphabet {
-                // If there are no s such that s ---c--> a_i for a_i in a then
-                // there is no point dong any of the below because
-                // o1 will always be empty
                 let mut x = BitSet::new();
                 for a_ in a.iter() {
                     if let Some(q) = backw.get(&(a_,*c)) {
                         x.union_with(q);
                     }
                 }
-                // For now make a fresh hashset every time.
-                // We will want to replace this with a dedicated
-                // partition refinement data structure.
+
                 let mut p_prime = HashSet::new();
                 for y in p.into_iter() {
                     let o1 = x.intersection(&y).collect::<BitSet>();
@@ -549,7 +633,10 @@ impl Dfa {
 
         let mut reduced_edges = HashMap::new();
         for partition in p.iter() {
-            // Arbitrary representative
+            // All partition items are non-empty. We ensure to only
+            // add F and Q\F initially if they are non-empty and then
+            // this is kept as an invariant throughout Hopcroft's
+            // algorithm
             let a = partition.iter().next().unwrap();
             let mut items = vec![];
             // All arrows from a (they will be the same from every rep)
@@ -563,34 +650,31 @@ impl Dfa {
             items.sort_unstable_by_key(|(c,_)| *c);
             reduced_edges.insert(lookup[a], items);
         }
-        println!("{reduced_edges:?}");
 
         // Naming canonicalisation.
         let mut canonical_permutation = vec![usize::MAX; p.len()];
         let mut visited = BitSet::with_capacity(self.num_states);
         let start = lookup[0];
-        let mut stack = vec![start];
+        // Queue in order to achieve shortlex order
+        let mut queue = VecDeque::from([start]);
         visited.insert(start);
         let mut idx = 0;
-        while let Some(next) = stack.pop() {
-            println!("!! {next}");
+        while let Some(next) = queue.pop_front() {
             // Inverse permutation creating a lookup
             canonical_permutation[next] = idx;
             idx += 1;
             // Canonicity comes from this being sorted in alphabetical
             // order of outgoing state character.
             if let Some(sorted_es) = reduced_edges.get(&next) {
-                // Iterate in reverse to put the earliest item
-                // next on the stack
-                for (_,j) in sorted_es.iter().rev() {
+                for (_,j) in sorted_es {
                     if !visited.contains(*j) {
                         visited.insert(*j);
-                        stack.push(*j);
+                        queue.push_back(*j);
                     }
                 }
             }
         }
-        println!("{canonical_permutation:?}");
+        // println!("{canonical_permutation:?}");
 
         let num_states = canonical_permutation.len();
         assert!(!canonical_permutation.iter().any(|&q| q == usize::MAX));
@@ -615,46 +699,11 @@ impl Dfa {
         }
     }
 
-    // // prob delete
-    // pub fn show_string(&self) -> String {
+    fn decide(&self, input: &str) -> bool {
+        todo!()
+    }
 
-    //     let mut z = HashMap::<usize, Vec<(Char, usize)>>::new();
-    //     for ((start, c), end) in &self.edges {
-    //         z.entry(*start)
-    //             .and_modify(|v| v.push((*c, *end)))
-    //             .or_insert_with(|| vec![(*c, *end)]);
-    //     }
-    //     // let mut z = z.into_iter().collect::<Vec<_>>();
-    //     // z.sort_unstable_by_key(|(idx,_)| *idx);
-
-    //     let mut s = String::new();
-    //     writeln!(s, "State | Final | Edges").unwrap();
-    //     for start in 0..self.num_states {
-    //         let fin = self.final_states.contains(start);
-    //         let fin_s = if fin { " Yes " } else { " No  " };
-    //         match z.get_mut(&start) {
-    //             None => {
-    //                 writeln!(s, "{start:5}   {fin_s}").unwrap();
-    //             },
-    //             Some(edges) => {
-    //                 edges.sort_unstable();
-    //                 let mut first = true;
-    //                 for (c, end) in edges {
-    //                     if first {
-    //                         writeln!(s, "{start:5}   {fin_s}   -- {c} -> {end:2}").unwrap();
-    //                         first = false;
-    //                     } else {
-    //                         writeln!(s, "                -- {c} -> {end:2}").unwrap();
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     s
-    // }
-
-    pub fn to_graphviz(&self) -> String {
+    fn to_graphviz(&self) -> String {
         let mut s = String::new();
         s.push_str(concat!(
             "digraph dfa {\n",
@@ -664,7 +713,7 @@ impl Dfa {
             "    node [shape = doublecircle];",
         ));
         for f in self.final_states.iter() {
-            write!(s, " {f}");
+            write!(s, " {f}").unwrap();
         }
         s.push_str("\n    node [shape = circle];\n");
         // TODO: this won't draw vertices with no edges touching them.
@@ -673,188 +722,69 @@ impl Dfa {
         for (i,v) in self.edges.iter().enumerate() {
             for (c,j) in v {
                 writeln!(s, "    {} -> {} [label = \"{}\"]",
-                    i, j, c);
+                    i, j, c).unwrap();
             }
         }
         s.push_str("}\n");
         s
     }
+
+    /// You could write a proc macro for this.
+    /// Let's just hack strings together instead though.
+    fn rust_codegen(&self, fn_name: &str) -> String {
+        let mut result = String::new();
+
+        write!(result, concat!(
+            "fn {}(input: &str) -> bool {{\n",
+            "    let mut s = 0;\n",
+            "    for c in s.chars() {{\n",
+            "        s = match (s,c) {{\n",
+        ), fn_name).unwrap();
+        for (i,v) in self.edges.iter().enumerate() {
+            for (c,j) in v {
+                write!(result, "            ({i},'{c}') => {j},\n").unwrap();
+            }
+        }
+        write!(result, concat!(
+            "            _ => return false,\n",
+            "        }}\n",
+            "    }}\n",
+            "\n",
+            "    matches!(s, ",
+        )).unwrap();
+        let mut first = true;
+        for f in self.final_states.iter() {
+            if first {
+                write!(result, "{}", f).unwrap();
+                first = false;
+            } else {
+                write!(result, " | {}", f).unwrap();
+            }
+        }
+        write!(result, ")\n}}\n").unwrap();
+        result
+    }
 }
 
-#[derive(Debug)]
-struct PartitionRefinementClass {
-    // Doubly-linked list pointers
-    left: usize,
-    right: usize,
-    // Where the items start in the buffer
-    item_header: usize,
-    split: usize, // We use usize::MAX as an Option as an optimisation
-}
-
-/// A partition refinement data structure on [0,...,N) for some N.
-#[derive(Debug)]
-struct PartitionRefinement {
-    // One index per state indicating the subset each state belongs to.
-    data: Vec<usize>,
-    // starts and ends.
-    // Logically a doubly linked list.
-    classes: Vec<PartitionRefinementClass>,
-}
-
-// impl PartitionRefinement {
-//     pub fn new(n: usize) {
-//         Self {
-//             data: vec![0; n],
-//         }
-//     }
-
-//     // precondition: every item in set is in [0,...,n).
-//     pub fn refine(&mut self, set: &BitSet) {
-//         for x in set.iter() {
-//             let s_x = self.data[x];
-//             if s_x.split == usize::MAX {
-//                 self.classes.push(PartitionRefinementClass {
-//                     // Where does it go?!
-//                 })
-//                 remove i from s_x
-//                 insert into split class for s_x
-//             }
-//         }
-//     }
-// }
-
-
-
-
-// TEMP STUFF BEFORE I WRITE A PARSER
-
-
-pub const emp: RegExp = RegExp::Empty;
-pub const eps: RegExp = RegExp::Epsilon;
-
-#[inline] pub fn lit(c: Char) -> RegExp { RegExp::Lit(c) }
-
-pub fn cnc(r1: RegExp, r2: RegExp) -> RegExp {
-    RegExp::Concat(Box::new(r1), Box::new(r2))
-}
-
-pub fn alt(r1: RegExp, r2: RegExp) -> RegExp {
-    RegExp::Alt(Box::new(r1), Box::new(r2))
-}
-
-pub fn ast(r: RegExp) -> RegExp { RegExp::Star(Box::new(r)) }
-pub fn opt(r: RegExp) -> RegExp { RegExp::Opt(Box::new(r)) }
-pub fn pls(r: RegExp) -> RegExp { RegExp::Plus(Box::new(r)) }
-
-pub fn example1() -> RegExp {
-    // (ε|0*1)
-    alt(eps, cnc(ast(lit('a')), lit('b')))
-    // cnc(ast(lit('a')), lit('b'))
-}
-
-// N > 0
-pub fn cnc_arr<const N: usize>(arr: [RegExp; N]) -> RegExp {
-    arr.into_iter().reduce(cnc).unwrap()
-}
-
-pub fn example3() -> RegExp {
-    // cnc(emp, lit('b'))
-    alt(cnc(lit('b'), emp), lit('a'))
-}
-
-
-pub fn example2() -> RegExp {
-    // (0|(1(01*(00)*0)*1)*)*
-    // (1(01*0)*1|0)*
-    // divisble by 3???
-    // cnc_arr([
-    //     lit('n'), lit('o'), ast(lit('o')), lit('p'), lit('e'),
-    // ])
-    // ast(
-    //     alt(
-    //         cnc(
-    //             cnc(
-    //                 lit('1'),
-    //                 ast(
-    //                     cnc(
-    //                         cnc(
-    //                             lit('0'),
-    //                             ast(lit('1')),
-    //                         ),
-    //                         lit('0'),
-    //                     )
-    //                 )
-    //             ),
-    //             lit('1'),
-    //         ),
-    //         lit('0'),
-    //     )
-    // )
-    // ast(
-    //     alt(
-    //         lit('0'),
-    //         ast(cnc(
-    //             cnc(
-    //                 lit('1'),
-    //                 ast(
-    //                     cnc(
-    //                         cnc(
-    //                             cnc(
-    //                                 lit('0'),
-    //                                 ast(lit('1')),
-    //                             ),
-    //                             ast(cnc(lit('0'), lit('0'))),
-    //                         ),
-    //                         lit('0'),
-    //                     )
-    //                 )
-    //             ),
-    //             lit('1')
-    //         ))
-    //     )
-    // )
-    // (1(01*0)*1|0)+
-    pls(
-        alt(
-            cnc_arr([
-                lit('1'),
-                ast(
-                    cnc_arr([
-                        lit('0'),
-                        ast(lit('1')),
-                        lit('0'),
-                    ])
-                ),
-                lit('1'),
-            ]),
-            lit('0'),
-        )
-    )
-}
-
-
-
-
-pub fn canon_dfa(regexp: &RegExp) -> Dfa {
-    let nfa = Nfa::from_regexp(regexp);
-    let dfa = Dfa::from_nfa(&nfa);
-    let canon_min_dfa = dfa.minimise(&regexp.chars_mentioned());
-    canon_min_dfa
-}
-
-
+#[cfg(test)]
 mod test {
     use super::*;
 
+    // Normal
+    const EXAMPLE1: &'static str = "ab|*a,b,b,ab|*,";
+    const EXAMPLE2: &'static str = "101*,0,*,1,0|+";
+    // Min-DFA has 2 states, both accepting
+    const EXAMPLE3: &'static str = "ab.*a?.";
+    // The Thompson NFA construction and DFA subset construction
+    // leaves an dead state with this regex that must be removed
+    const EXAMPLE4: &'static str = "b$,a|";
+    // This one grows exponentially in the number of ab|,s at the end
+    const EXAMPLE5: &'static str = "ab|*b,ab|,ab|,ab|,ab|,";
+    const EXAMPLE6: &'static str = "$";
+    const EXAMPLE7: &'static str = "abcde$";
+
     #[test]
     fn dfa_example() {
-        // TODO: Write the parser
-        let a_or_b_star = ast(alt(lit('a'), lit('b')));
-        let t_abb_t = cnc_arr([
-            a_or_b_star.clone(),
-            lit('a'), lit('b'), lit('b'),
-            a_or_b_star,
-        ]);
         let expected_canonical_dfa = Dfa {
             num_states: 4,
             edges: vec![
@@ -866,14 +796,14 @@ mod test {
             final_states: [3].into_iter().collect::<BitSet>(),
         };
 
-        let actual_dfa = canon_dfa(&t_abb_t);
+        let actual_dfa = StateMachine::new(EXAMPLE1).unwrap().0;
         assert_eq!(expected_canonical_dfa, actual_dfa);
     }
 
     #[test]
     fn dfa_with_uninhabited() {
         // Everyone's favourite nightmare counterexample
-        let only_a = alt(lit('a'), cnc(lit('b'), emp));
+        // b$ not $b
         let expected_canonical_dfa = Dfa {
             num_states: 2,
             edges: vec![
@@ -883,46 +813,7 @@ mod test {
             final_states: [1].into_iter().collect::<BitSet>(),
         };
 
-        let actual_dfa = canon_dfa(&only_a);
+        let actual_dfa = StateMachine::new(EXAMPLE4).unwrap().0;
         assert_eq!(expected_canonical_dfa, actual_dfa);
-    }
-
-    #[test]
-    fn regex_chars_1() {
-        // TODO: Write the parser
-        let abcd = cnc_arr([
-            lit('a'),
-            lit('b'),
-            lit('c'),
-            lit('d'),
-        ]);
-        let expected_inhab = ['a','b', 'c', 'd']
-            .into_iter().collect::<HashSet<_>>();
-        let actual_inhab = abcd.chars_mentioned();
-        assert_eq!(expected_inhab, actual_inhab);
-    }
-
-    #[test]
-    fn regex_chars_2() {
-        // TODO: Write the parser
-        let a_or_b_star = ast(alt(lit('a'), lit('b')));
-        let t_abb_t = cnc_arr([
-            a_or_b_star.clone(),
-            lit('a'), lit('b'), lit('b'),
-            a_or_b_star,
-        ]);
-        let expected_inhab = ['a','b'].into_iter().collect::<HashSet<_>>();
-        let actual_inhab = t_abb_t.chars_mentioned();
-        assert_eq!(expected_inhab, actual_inhab);
-    }
-
-    #[test]
-    fn regex_chars_uninhabited() {
-        // TODO: Write the parser
-        let only_a = alt(lit('a'), cnc(lit('b'), emp));
-        // Change this to 'a'
-        let expected_inhab = ['a'].into_iter().collect::<HashSet<_>>();
-        let actual_inhab = only_a.chars_mentioned();
-        assert_eq!(expected_inhab, actual_inhab);
     }
 }
