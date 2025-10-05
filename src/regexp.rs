@@ -68,6 +68,33 @@ impl StateMachine {
                 } else {
                     return Err("No redex to apply * to".to_string());
                 },
+                '!' => if stack.len() >= 1 {
+                    let r = stack.pop().unwrap();
+                    stack.push(RegExp::Neg(Box::new(r)));
+                } else {
+                    return Err("No redex to apply ! to".to_string());
+                },
+                '&' => if stack.len() >= 2 {
+                    let r2 = stack.pop().unwrap();
+                    let r1 = stack.pop().unwrap();
+                    stack.push(RegExp::And(Box::new(r1), Box::new(r2)));
+                } else {
+                    return Err("No pair of redexes to apply & to".to_string());
+                },
+                '\\' => if stack.len() >= 2 {
+                    let r2 = stack.pop().unwrap();
+                    let r1 = stack.pop().unwrap();
+                    stack.push(RegExp::Diff(Box::new(r1), Box::new(r2)));
+                } else {
+                    return Err("No pair of redexes to apply | to".to_string());
+                },
+                '^' => if stack.len() >= 2 {
+                    let r2 = stack.pop().unwrap();
+                    let r1 = stack.pop().unwrap();
+                    stack.push(RegExp::SymDiff(Box::new(r1), Box::new(r2)));
+                } else {
+                    return Err("No pair of redexes to apply | to".to_string());
+                },
                 ' ' | '\n' | '\r' | '\t' => (),
                 _ => if c.is_ascii_alphanumeric() {
                     stack.push(RegExp::Lit(c));
@@ -130,6 +157,14 @@ enum RegExp {
     Opt(Box<RegExp>),
     /// One or more. `Plus(r)` is equivalent to `Concat(r, Star(r))`.
     Plus(Box<RegExp>),
+    /// Scary things!
+    Neg(Box<RegExp>),
+    /// Intersection
+    And(Box<RegExp>, Box<RegExp>),
+    /// Difference
+    Diff(Box<RegExp>, Box<RegExp>),
+    /// Symmetric difference
+    SymDiff(Box<RegExp>, Box<RegExp>),
 }
 
 impl RegExp {
@@ -154,6 +189,19 @@ impl RegExp {
             RegExp::Star(r) => r.chars_rec(acc),
             RegExp::Opt(r) => r.chars_rec(acc),
             RegExp::Plus(r) => r.chars_rec(acc),
+            RegExp::Neg(r) => r.chars_rec(acc),
+            RegExp::And(r1, r2) => {
+                r1.chars_rec(acc);
+                r2.chars_rec(acc);
+            },
+            RegExp::Diff(r1, r2) => {
+                r1.chars_rec(acc);
+                r2.chars_rec(acc);
+            },
+            RegExp::SymDiff(r1, r2) => {
+                r1.chars_rec(acc);
+                r2.chars_rec(acc);
+            },
         }
     }
 
@@ -297,6 +345,10 @@ impl Nfa {
                 f1_t.push((f2x, None));
                 f2x
             },
+            RegExp::Neg(_)
+                | RegExp::And(_, _)
+                | RegExp::Diff(_, _)
+                | RegExp::SymDiff(_, _) => panic!("Not supported yet."),
         }
     }
 
@@ -385,6 +437,24 @@ impl<'a> EpsilonClosureCache<'a> {
         self.cache.get(b).as_ref().unwrap()
     }
 }
+
+
+
+
+// Hashset of (usize, char, usize)?
+// (usize, char) -> usize
+// usize -> (char -> usize)
+// usize -> [(char, usize)]
+
+// For reachability we want fast iteration over all neighbours
+// For liveness and Hopcroft we want fast backwards iteration!
+// We need to be able to chop out states easily, removing
+// all their edges (don't necessarily need to be able to do this
+// extremely fast)
+
+
+
+
 
 /// A deterministic finite automaton.
 /// We derive EQ (assuming edges is sorted, which it should be I guess,
@@ -697,6 +767,15 @@ impl Dfa {
             edges: canon_edges,
             final_states,
         }
+    }
+
+    /// Relabel states in order of the earliest string in shortlex
+    /// order that reaches that state.
+    /// PRECONDITION: the DFA has no unreachable states. Otherwise
+    /// things will go wrong. There is no reason to canonicalise
+    /// a DFA with unreachable states as said DFA is defective.
+    fn canonicalise() {
+
     }
 
     fn decide(&self, input: &str) -> bool {
