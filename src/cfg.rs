@@ -214,11 +214,31 @@ impl fmt::Debug for ContextFreeGrammar {
 // LR(1)-ness?
 
 
+fn parse(s: &str) {
+    let q = s.split('\n')
+        .map(|rule_str| {
+            let z = rule_str.split(" => ");
+            let lhs = z.next()?;
+            let production = z.next()?;
+            z.next().assert err;
+            let a = production.split(' ')
+                .map(|c| match c.get(0) {
+                    Some('\'') if c.len() == 2 => Ok(term),
+                    Some(k) if c.len() == 1 => Ok(var),
+                    _ => Err(()),
+                }).collect::<Result<_, _>>()?;
+            Ok(var(lhs), a);
+        })
+        // .collect::<Resul/
+}
 
 
-
-
-
+"""
+S => '0
+S => A
+A => A B
+B => B '1
+"""
 
 
 

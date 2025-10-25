@@ -23,6 +23,11 @@ fn main() -> io::Result<()> {
     }
 }
 
+
+fn earley_main() {
+    
+}
+
 // fn cfg_test_main() {
 //     let mut test_grammar = ContextFreeGrammar::new(
 //         [

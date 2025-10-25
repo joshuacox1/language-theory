@@ -17,4 +17,4 @@ Some things that may live here:
   - Evaluator, beta-equivalence checker
 - Hindley&ndash;Milner implementation
   - Algebraic data types + match
-  -
+  - Match goodies (recursive matches, inhabitance, etc.)

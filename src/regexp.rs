@@ -86,14 +86,14 @@ impl StateMachine {
                     let r1 = stack.pop().unwrap();
                     stack.push(RegExp::Diff(Box::new(r1), Box::new(r2)));
                 } else {
-                    return Err("No pair of redexes to apply | to".to_string());
+                    return Err("No pair of redexes to apply \\ to".to_string());
                 },
                 '^' => if stack.len() >= 2 {
                     let r2 = stack.pop().unwrap();
                     let r1 = stack.pop().unwrap();
                     stack.push(RegExp::SymDiff(Box::new(r1), Box::new(r2)));
                 } else {
-                    return Err("No pair of redexes to apply | to".to_string());
+                    return Err("No pair of redexes to apply ^ to".to_string());
                 },
                 ' ' | '\n' | '\r' | '\t' => (),
                 _ => if c.is_ascii_alphanumeric() {
@@ -464,8 +464,9 @@ struct Dfa {
     // The states will be 0 to n-1
     num_states: usize,
     // TODO: One buffer with start,len pointers in it for cache locality?
-    edges: Vec<Vec<(char, usize)>>,
-    final_states: BitSet,
+    // edges: Vec<Vec<(char, usize)>>,
+    nodes: HashMap<usize, HashMap<char, usize>>,
+    final_states: HashSet<usize>,
 }
 
 impl Dfa {
@@ -547,8 +548,23 @@ impl Dfa {
         }
     }
 
-    /// Canonicalises by shortlex while we're at it
-    fn minimise(&self, alphabet: &HashSet<char>) -> Self {
+    /// Minimise the given DFA.
+    /// Skip-unreachable and skip-dead skips those steps.
+    /// Use these if you are confident that the DFA
+    /// will not have these. For example, the Thompson NFA
+    /// construction combined with the DFA subset construction
+    /// only produces reachable states. It can also only produce
+    /// dead states if the $ empty regex is involved at some
+    /// point (though not always: ($b)|a does not produce
+    /// dead states while (b$)|a does).
+    /// Negation does not alter reachability (though it nearly
+    /// always creates dead states). Intersection on the other
+    /// hand frequently creates unreachable states.
+    /// Use as appropriate.
+    fn minimise(&self,
+        alphabet: &HashSet<char>,
+        skip_unreachable_filter: bool,
+        skip_dead_filter: bool) -> Self {
         // Step 1 (unreachable states):
         // The subset construction only created vertices reachable
         // from the root and so automatically culled unreachable
@@ -769,12 +785,55 @@ impl Dfa {
         }
     }
 
+    /// Remove unreachable states.
+    fn remove_unreachable(&mut self) {
+
+    }
+
+    /// Remove dead states.
+    fn remove_dead(&mut self) {
+
+    }
+
     /// Relabel states in order of the earliest string in shortlex
-    /// order that reaches that state.
+    /// order that reaches that state, indexed from 0.
     /// PRECONDITION: the DFA has no unreachable states. Otherwise
     /// things will go wrong. There is no reason to canonicalise
     /// a DFA with unreachable states as said DFA is defective.
-    fn canonicalise() {
+    fn canonicalise(&mut self) {
+
+    }
+
+    /// Negate a DFA. This is as simple as swapping final
+    /// and non-final states. Then minimise.
+    /// PRECONDITION: all states in the original DFA
+    /// are reachable. Otherwise all bets are off.
+    fn negate_min(&mut self) {
+
+        // Negation nearly always creates dead states
+        // but never creates unreachable ones.
+        dfa.minimise(alphabet, false, true)
+    }
+
+    /// Intersect DFAs. Constructs the product DFA
+    /// with arrows only when both have arrows and final states
+    /// only if both are. Then minimises.
+    fn intersect_min(alphabet: &HashSet<char>) -> Self {
+        // intersection frequently produces both
+        // unreachable and dead states
+
+        dfa.minimise(alphabet, true, true)
+    }
+
+    /// debug-asserts all states are reachable.
+    fn debug_assert_all_reachable() {
+
+    }
+
+    /// debug-asserts all states are alive. Note that
+    /// unreachable states are still considered alive
+    /// if they can reach a final state.
+    fn debug_assert_all_alive() {
 
     }
 
