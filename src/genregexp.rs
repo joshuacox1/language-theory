@@ -25,6 +25,12 @@ impl fmt::Debug for Char {
     }
 }
 
+impl fmt::Display for Char {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0 as char)
+    }
+}
+
 
 // impl debug/display char based
 // tryfrom
@@ -207,8 +213,8 @@ impl Dfa {
         // We can compute the intersection without the full
         // product of states by creating states on the fly
         // during a graph search.
-        // No need to complete either DFA as if either transition
-        // is invalid, the combined transition will be.
+        // Assumes appropriate completions have been performed
+        // beforehand.
 
         // TODO: reuse this code in almost exact form across R&S,
         // R\S, R|S and R^S. The only difference is that we need to
@@ -220,39 +226,49 @@ impl Dfa {
         let s0 = (self.start, other.start);
         let mut visited = HashMap::new();
         visited.insert(s0, 0);
+        let mut transitions = HashMap::new();
         let mut stack = vec![s0];
         while let Some(next) = stack.pop() {
             let next_self = next.0;
             let next_other = next.1;
-            let n_i = visited.get(&next).unwrap();
+            let n_i = *visited.get(&next).unwrap();
             let self_t = self.transitions.get(&next_self).unwrap();
             let other_t = self.transitions.get(&next_other).unwrap();
+            // which has the fewest characters. irrelevant if
+            // both sides have been completed
             let (min_t,max_t) = if self_t.len() <= other_t.len() {
                 (self_t, other_t)
             } else {
                 (other_t, self_t)
             };
+
+            let mut m = HashMap::new();
             for (c, self2) in min_t {
                 if let Some(other2) = max_t.get(&c) {
-                    let new_state = (self2, other2);
-                    // TODO entry api.
+                    let new_state = (*self2, *other2);
+                    let v = visited.len();
+                    let new_i = *visited.entry(new_state)
+                        .or_insert(v);
+
+                    m.insert(*c, new_i);
+
                     if !visited.contains_key(&new_state) {
-                        visited.insert(*new_state, visited.len());
+                        visited.insert(new_state.clone(), visited.len());
                         stack.push(new_state);
                     }
-                    // edge n_i ---c---> new_state_i.
                 }
             }
+
+            transitions.insert(n_i, m);
         }
-        // TODO: ensure that transitions gets filled with an empty
-        // map regardless for every key.
-        let transitions = HashMap::new();
 
         Self {
             transitions,
             start: 0,
-            r#final: visited.iter()
-                .filter_map(|((s,t),i)| if self.r#final.contains(&s) && other.r#final.contains(&t) {
+            r#final: visited.into_iter()
+                .filter_map(|((s,t),i)| if final_rule(
+                        self.r#final.contains(&s),
+                        other.r#final.contains(&t)) {
                     Some(i)
                 } else {
                     None
@@ -334,7 +350,11 @@ impl Dfa {
     pub fn complement(&mut self) {
         self.complete();
         let new_final = self.transitions.keys()
-            .filter(|k| !self.r#final.contains(&k))
+            .filter_map(|k| if self.r#final.contains(&k) {
+                None
+            } else {
+                Some(*k)
+            })
             .collect::<HashSet<_>>();
         self.r#final = new_final;
     }
