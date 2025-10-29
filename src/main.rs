@@ -7,21 +7,26 @@
 
 use std::io;
 
-fn main() -> io::Result<()> {
-    use contextfree::regexp::*;
-    let mut buffer = String::new();
-
-    loop {
-        io::stdin().read_line(&mut buffer)?;
-
-        match StateMachine::new(&buffer) {
-            Ok(canon_min_dfa) => println!("\n{}", canon_min_dfa.to_graphviz()),
-            Err(e) => println!("Parse fail: {e}"),
-        }
-
-        buffer.clear();
-    }
+fn main() {
+    println!("Meow");
 }
+
+
+// fn main() -> io::Result<()> {
+//     use contextfree::regexp::*;
+//     let mut buffer = String::new();
+
+//     loop {
+//         io::stdin().read_line(&mut buffer)?;
+
+//         match StateMachine::new(&buffer) {
+//             Ok(canon_min_dfa) => println!("\n{}", canon_min_dfa.to_graphviz()),
+//             Err(e) => println!("Parse fail: {e}"),
+//         }
+
+//         buffer.clear();
+//     }
+// }
 
 // fn cfg_test_main() {
 //     let mut test_grammar = ContextFreeGrammar::new(
