@@ -313,15 +313,21 @@ impl Dfa {
             let other_t = other.transitions.get(&next_other).unwrap();
             // which has the fewest characters. irrelevant if
             // both sides have been completed
-            let (min_t,max_t) = if self_t.len() <= other_t.len() {
+            let self_min = self_t.len() <= other_t.len();
+            let (min_t,max_t) = if self_min {
                 (self_t, other_t)
             } else {
                 (other_t, self_t)
             };
 
             let mut m = HashMap::new();
-            for (c, self2) in min_t {
-                if let Some(other2) = max_t.get(&c) {
+            for (c, min2) in min_t {
+                if let Some(max2) = max_t.get(&c) {
+                    let (self2, other2) = if self_min {
+                        (min2, max2)
+                    } else {
+                        (max2, min2)
+                    };
                     println!("{next_self}, {next_other}, {c}, {self2}, {other2}");
                     let new_state = (*self2, *other2);
                     let v = visited.len();
