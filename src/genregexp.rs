@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque, BTreeMap};
 use std::fmt;
 use std::fmt::Write;
 
@@ -198,6 +198,17 @@ impl GenRegex {
     }
 }
 
+// TERMINOLOGY. CMIDFA stands for canonical minimal incomplete
+// deterministic finite automaton. This is the final form of a DFA.
+// The CMIDFAs are in one-to-one correspondence with the regular
+// languages. The canonical form chosen here is with state labels
+// numbered in [0,...,n) in order of the earliest string in shortlex
+// order that reaches the given state. (This always exists because
+// the presence of unreachable states would contradict minimality.)
+
+// A DFA D is a CMIDFA iff d.minimise().canonicalise() == d.
+// (canonicalise always succeeds on a min-DFA)
+
 /// An incomplete deterministic finite automaton.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dfa {
@@ -291,13 +302,15 @@ impl Dfa {
         let mut visited = HashMap::new();
         visited.insert(s0, 0);
         let mut transitions = HashMap::new();
-        let mut stack = vec![s0];
-        while let Some(next) = stack.pop() {
+        let mut queue = VecDeque::new();
+        queue.push_back(s0);
+        while let Some(next) = queue.pop_front() {
             let next_self = next.0;
             let next_other = next.1;
+            println!("{:?}", (next_self, next_other));
             let n_i = *visited.get(&next).unwrap();
             let self_t = self.transitions.get(&next_self).unwrap();
-            let other_t = self.transitions.get(&next_other).unwrap();
+            let other_t = other.transitions.get(&next_other).unwrap();
             // which has the fewest characters. irrelevant if
             // both sides have been completed
             let (min_t,max_t) = if self_t.len() <= other_t.len() {
@@ -309,17 +322,21 @@ impl Dfa {
             let mut m = HashMap::new();
             for (c, self2) in min_t {
                 if let Some(other2) = max_t.get(&c) {
+                    println!("{next_self}, {next_other}, {c}, {self2}, {other2}");
                     let new_state = (*self2, *other2);
                     let v = visited.len();
                     let new_i = *visited.entry(new_state)
-                        .or_insert(v);
+                        .or_insert_with(|| {
+                            queue.push_back(new_state);
+                            v
+                        });
 
                     m.insert(*c, new_i);
 
-                    if !visited.contains_key(&new_state) {
-                        visited.insert(new_state.clone(), visited.len());
-                        stack.push(new_state);
-                    }
+                    // if !visited.contains_key(&new_state) {
+                    //     visited.insert(new_state.clone(), visited.len());
+                    //     stack.push(new_state);
+                    // }
                 }
             }
 
@@ -460,6 +477,8 @@ impl Dfa {
         // Let it be in any order, I suppose.
         let num_width = 1; // todo: make it fit
 
+        write!(result, "BTW THE START STATE IS {}\n", self.start).unwrap();
+
         result.push_str("┏━━━");
         for _ in 0..num_width {
             result.push('━');
@@ -490,7 +509,8 @@ impl Dfa {
             } else {
                 "-"
             };
-            write!(result, "┃ {is_final} {state:>w$} │ ", w = num_width);
+            write!(result, "┃ {is_final} {state:>w$} │ ", w = num_width)
+                .unwrap();
             for c in ALPHABET.iter() {
                 match charmap.get(c) {
                     Some(target) => write!(
@@ -519,5 +539,26 @@ impl Dfa {
         result.push('┛');
 
         result
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn base_cases_are_cmidfas() {
+        let base_cases = [
+            Dfa::nothing(),
+            Dfa::all(),
+            Dfa::emptystring(),
+            Dfa::anychar(),
+            Dfa::lit(*ALPHABET[7]),
+        ];
+        for base_case in base_cases {
+            let canon_min = base_case.minimise().canonicalise().unwrap();
+            assert_eq!(base_case, canon_min);
+        }
     }
 }

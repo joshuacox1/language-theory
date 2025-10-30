@@ -17,7 +17,10 @@ fn main() -> io::Result<()> {
         match GenRegex::from_str(&buffer) {
             Some(r) => {
                 println!("{r:?}");
-                println!("{}", r.to_min_canon_dfa().show());
+                let mut d = r.to_min_canon_dfa();
+                println!("{}", d.show());
+                d.complete();
+                println!("{}", d.show());
             }
             None => println!("Parsing error :("),
         }
