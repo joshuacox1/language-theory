@@ -7,8 +7,23 @@
 
 use std::io;
 
-fn main() {
-    println!("Meow");
+fn main() -> io::Result<()> {
+    use contextfree::genregexp::*;
+
+    let mut buffer = String::new();
+    loop {
+        io::stdin().read_line(&mut buffer)?;
+
+        match GenRegex::from_str(&buffer) {
+            Some(r) => {
+                println!("{r:?}");
+                println!("{}", r.to_min_canon_dfa().show());
+            }
+            None => println!("Parsing error :("),
+        }
+
+        buffer.clear();
+    }
 }
 
 

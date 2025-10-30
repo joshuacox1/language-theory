@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::fmt::Write;
 
 // tod impl debug/display char based
 
@@ -66,13 +67,13 @@ const ALPHABET: [Char; 26] = [
 
 /// A generalised regular expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum GenRegex {
+pub enum GenRegex {
     /// The empty language.
     Nothing,
     /// The complete language.
     All,
     /// The empty string language. Equivalent to `Star(Empty)`.
-    Epsilon,
+    EmptyStr,
     /// Any single character.
     AnyChar,
     /// The given single character.
@@ -98,18 +99,80 @@ enum GenRegex {
 }
 
 impl GenRegex {
+    pub fn from_str(s: &str) -> Option<Self> {
+        fn match1(
+            stack: &mut Vec<GenRegex>,
+            f: impl Fn(Box<GenRegex>) -> GenRegex,
+        ) -> Option<()> {
+            if stack.len() >= 1 {
+                let r = stack.pop().unwrap();
+                stack.push(f(Box::new(r)));
+                Some(())
+            } else {
+                None
+            }
+        }
+
+        fn match2(
+            stack: &mut Vec<GenRegex>,
+            f: impl Fn(Box<GenRegex>, Box<GenRegex>) -> GenRegex,
+        ) -> Option<()> {
+            if stack.len() >= 2 {
+                let r2 = stack.pop().unwrap();
+                let r1 = stack.pop().unwrap();
+                stack.push(f(Box::new(r1), Box::new(r2)));
+                Some(())
+            } else {
+                None
+            }
+        }
+
+        let mut stack = Vec::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '$' => stack.push(GenRegex::Nothing),
+                '%' => stack.push(GenRegex::All),
+                '~' => stack.push(GenRegex::EmptyStr),
+                '.' => stack.push(GenRegex::AnyChar),
+                '*' => match1(&mut stack, GenRegex::Star)?,
+                '?' => match1(&mut stack, GenRegex::Opt)?,
+                '+' => match1(&mut stack, GenRegex::Plus)?,
+                '!' => match1(&mut stack, GenRegex::Complement)?,
+                ',' => match2(&mut stack, GenRegex::Concat)?,
+                '|' => match2(&mut stack, GenRegex::Union)?,
+                '&' => match2(&mut stack, GenRegex::Intersect)?,
+                '\\' => match2(&mut stack, GenRegex::Diff)?,
+                '^' => match2(&mut stack, GenRegex::SymDiff)?,
+                ' ' | '\n' | '\r' | '\t' => (),
+                _ => match Char::from_char(c) {
+                    Some(c_) => stack.push(GenRegex::Lit(c_)),
+                    None => return None,
+                },
+            }
+        }
+
+        if stack.len() != 1 {
+            return None;
+        }
+
+        Some(stack.swap_remove(0))
+    }
+
+
+
+
     pub fn to_min_canon_dfa(&self) -> Dfa {
         let d = self.to_min_dfa_inner();
         // Minimality implies all states are reachable and hence
         // canonicalisation will always work
-        d.canonicalise().unwrap()
+        d//.canonicalise().unwrap()
     }
 
     fn to_min_dfa_inner(&self) -> Dfa {
         match self {
             GenRegex::Nothing => Dfa::nothing(),
             GenRegex::All => Dfa::all(),
-            GenRegex::Epsilon => Dfa::emptystring(),
+            GenRegex::EmptyStr => Dfa::emptystring(),
             GenRegex::AnyChar => Dfa::anychar(),
             GenRegex::Lit(c) => Dfa::lit(*c),
             GenRegex::Star(r) => r.to_min_dfa_inner().star().minimise(),
@@ -136,6 +199,7 @@ impl GenRegex {
 }
 
 /// An incomplete deterministic finite automaton.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dfa {
     // State transitions. The keys are the set of states in the NFA.
     transitions: HashMap<usize, HashMap<Char, usize>>,
@@ -170,7 +234,7 @@ impl Dfa {
     /// no guarantee on consistency of state labels. However by the
     /// Myhill-Nerode theorem the min DFA is unique up to isomorphism.
     pub fn minimise(&self) -> Self {
-        unimplemented!()
+        self.clone()//unimplemented!()
     }
 
     /// Completes the DFA. No guarantee in preserving minimality.
@@ -278,8 +342,10 @@ impl Dfa {
     }
 
     pub fn nothing() -> Self {
+        let mut transitions = HashMap::new();
+        transitions.insert(0, HashMap::new());
         Self {
-            transitions: HashMap::new(),
+            transitions,
             start: 0,
             r#final: HashSet::new(),
         }
@@ -299,8 +365,10 @@ impl Dfa {
     }
 
     pub fn emptystring() -> Self {
+        let mut transitions = HashMap::new();
+        transitions.insert(0, HashMap::new());
         Self {
-            transitions: HashMap::new(),
+            transitions,
             start: 0,
             r#final: [0].into_iter().collect::<HashSet<_>>(),
         }
@@ -384,5 +452,72 @@ impl Dfa {
         self.complete();
         other.complete();
         self.product(other, |a, b| a != b)
+    }
+
+    // Show ascii art style
+    pub fn show(&self) -> String {
+        let mut result = String::new();
+        // Let it be in any order, I suppose.
+        let num_width = 1; // todo: make it fit
+
+        result.push_str("┏━━━");
+        for _ in 0..num_width {
+            result.push('━');
+        }
+        result.push_str("━┯━");
+        for _ in 0..(ALPHABET.len()*(num_width+1)) {
+            result.push('━');
+        }
+        result.push_str("┓\n┃ ! ");
+        for _ in 0..num_width {
+            result.push('#');
+        }
+        result.push_str(" │ ");
+        for c in ALPHABET.iter() {
+            write!(result, "{c} ").unwrap();
+        }
+        result.push_str("┃\n┠─────┼─");
+        for _ in 0..(ALPHABET.len()*(num_width+1)) {
+            result.push('─');
+        }
+        result.push_str("┨\n");
+
+        // todo show start state somehow? or doesn't matter if
+        // only showing canonicalised where start=0
+        for (state, charmap) in self.transitions.iter() {
+            let is_final = if self.r#final.contains(&state) {
+                "*"
+            } else {
+                "-"
+            };
+            write!(result, "┃ {is_final} {state:>w$} │ ", w = num_width);
+            for c in ALPHABET.iter() {
+                match charmap.get(c) {
+                    Some(target) => write!(
+                        result,
+                        "{target:>w$} ", w = num_width
+                    ).unwrap(),
+                    None => {
+                        for _ in 0..(num_width-1) {
+                            result.push(' ');
+                        }
+                        result.push('.');
+                        result.push(' ');
+                    }
+                }
+            }
+            result.push_str("┃\n");
+        }
+        result.push_str("┗━━━");
+        for _ in 0..num_width {
+            result.push('━');
+        }
+        result.push_str("━┷━");
+        for _ in 0..(ALPHABET.len()*(num_width+1)) {
+            result.push('━');
+        }
+        result.push('┛');
+
+        result
     }
 }
