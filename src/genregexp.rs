@@ -307,7 +307,6 @@ impl Dfa {
         while let Some(next) = queue.pop_front() {
             let next_self = next.0;
             let next_other = next.1;
-            println!("{:?}", (next_self, next_other));
             let n_i = *visited.get(&next).unwrap();
             let self_t = self.transitions.get(&next_self).unwrap();
             let other_t = other.transitions.get(&next_other).unwrap();
@@ -328,7 +327,6 @@ impl Dfa {
                     } else {
                         (max2, min2)
                     };
-                    println!("{next_self}, {next_other}, {c}, {self2}, {other2}");
                     let new_state = (*self2, *other2);
                     let v = visited.len();
                     let new_i = *visited.entry(new_state)
@@ -338,11 +336,6 @@ impl Dfa {
                         });
 
                     m.insert(*c, new_i);
-
-                    // if !visited.contains_key(&new_state) {
-                    //     visited.insert(new_state.clone(), visited.len());
-                    //     stack.push(new_state);
-                    // }
                 }
             }
 
