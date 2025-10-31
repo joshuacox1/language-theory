@@ -19,8 +19,6 @@ fn main() -> io::Result<()> {
                 println!("{r:?}");
                 let mut d = r.to_min_canon_dfa();
                 println!("{}", d.show());
-                d.complete();
-                println!("{}", d.show());
             }
             None => println!("Parsing error :("),
         }

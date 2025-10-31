@@ -309,6 +309,15 @@ impl Dfa {
             }
         }
 
+        // Now visited only contains dead states.
+        self.transitions.retain(|s, charmap| {
+            let ok = !visited.contains(&s);
+            if ok {
+                charmap.retain(|_, t| !visited.contains(&t));
+            }
+            ok
+        });
+
         // 3. Hopcroft's algorithm
         // TODO. This is a relatively naive implementation of
         // Hopcroft's algorithm. It is not notably inefficient, but
