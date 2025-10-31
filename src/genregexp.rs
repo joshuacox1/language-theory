@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque, BTreeMap};
+use std::collections::{HashMap, HashSet, VecDeque, BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write;
 
@@ -165,7 +165,7 @@ impl GenRegex {
         let d = self.to_min_dfa_inner();
         // Minimality implies all states are reachable and hence
         // canonicalisation will always work
-        d//.canonicalise().unwrap()
+        d.canonicalise().unwrap()
     }
 
     fn to_min_dfa_inner(&self) -> Dfa {
@@ -213,9 +213,9 @@ impl GenRegex {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dfa {
     // State transitions. The keys are the set of states in the NFA.
-    transitions: HashMap<usize, HashMap<Char, usize>>,
+    transitions: BTreeMap<usize, BTreeMap<Char, usize>>,
     start: usize,
-    r#final: HashSet<usize>,
+    r#final: BTreeSet<usize>,
 }
 
 impl Dfa {
@@ -238,19 +238,187 @@ impl Dfa {
 
 
     /// Returns a minimal DFA through:
-    /// - Remove unreachable states
-    /// - Remove dead states
-    /// - Minimise with Hopcroft's algorithm.
+    /// 1. Remove unreachable states
+    /// 2. Remove dead states
+    /// 3. Minimise with Hopcroft's algorithm.
     /// The result will be an incomplete DFA in general. There is also
     /// no guarantee on consistency of state labels. However by the
     /// Myhill-Nerode theorem the min DFA is unique up to isomorphism.
-    pub fn minimise(&self) -> Self {
-        self.clone()//unimplemented!()
+    /// Takes ownership to use the DFA as scratch space, rendering
+    /// it garbage.
+    pub fn minimise(mut self) -> Self {
+        // 1. remove unreachable states.
+        let mut visited = HashSet::new();
+        visited.insert(self.start);
+        let mut stack = vec![self.start];
+        while let Some(next) = stack.pop() {
+            let neighbors = self.transitions.get(&next)
+                .unwrap()
+                .values();
+            for n in neighbors {
+                let wasnt_present = visited.insert(*n);
+                if wasnt_present {
+                    stack.push(*n);
+                }
+            }
+        }
+
+        self.transitions.retain(|s, charmap| {
+            let ok = visited.contains(&s);
+            if ok {
+                charmap.retain(|_, t| visited.contains(&t));
+            }
+            ok
+        });
+
+        // We will need a reversed neighbour-map for both steps
+        // 2. and 3.
+        let mut reversed_transitions: HashMap<
+            usize,
+            HashMap<Char, HashSet<usize>>> = HashMap::new();
+        for (s, charmap) in self.transitions.iter() {
+            for (c, t) in charmap.iter() {
+                reversed_transitions
+                    .entry(*t).or_insert_with(|| HashMap::new())
+                    .entry(*c).or_insert_with(|| HashSet::new())
+                    .insert(*s);
+            }
+        }
+
+        // 2. remove dead states other than the start state.
+        // we can obtain liveness by graph searching reversed arrows
+        // starting from each final state.
+        // Let's reuse the visited set from part 1.
+        visited.remove(&self.start);
+        let mut stack = vec![self.start];
+        for f in &self.r#final {
+            if visited.contains(f) {
+                stack.push(*f);
+                while let Some(next) = stack.pop() {
+                    visited.remove(&next);
+                    if let Some(maps) = reversed_transitions.get(&next) {
+                        for c_to_ss in maps.values() {
+                            for s in c_to_ss.iter() {
+                                if visited.contains(s) {
+                                    stack.push(*s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Hopcroft's algorithm
+        // TODO. This is a relatively naive implementation of
+        // Hopcroft's algorithm. It is not notably inefficient, but
+        // there exist specialist data structures for partition
+        // refinement.
+        let f = &self.r#final;
+        let mut q_bar_f = BTreeSet::new();
+        for s in self.transitions.keys() {
+            if !f.contains(s) {
+                q_bar_f.insert(*s);
+            }
+        }
+        let mut p = HashSet::new();
+        let mut w = HashSet::new();
+        if !f.is_empty() {
+            p.insert(f.clone());
+            w.insert(f.clone());
+        }
+        if !q_bar_f.is_empty() {
+            p.insert(q_bar_f.clone());
+            w.insert(q_bar_f);
+        }
+
+        // Cloned???
+        while let Some(a) = w.iter().next().cloned() {
+            w.remove(&a);
+            for c in ALPHABET.iter() {
+                let mut x: BTreeSet<usize> = BTreeSet::new();
+                for a_ in a.iter() {
+                    if let Some(rev_map) = reversed_transitions.get(a_) {
+                        if let Some(ss) = rev_map.get(c) {
+                            for s in ss {
+                                x.insert(*s);
+                            }
+                        }
+                    }
+                }
+
+                let mut p_prime = HashSet::new();
+                for y in p.into_iter() {
+                    let o1 = x.intersection(&y)
+                        .map(|&a| a).collect::<BTreeSet<_>>();
+                    let o2 = y.difference(&x)
+                        .map(|&a| a).collect::<BTreeSet<_>>();
+                    if !o1.is_empty() && !o2.is_empty() {
+                        p_prime.insert(o1.clone());
+                        p_prime.insert(o2.clone());
+
+                        if w.remove(&y) {
+                            w.insert(o1.clone());
+                            w.insert(o2.clone());
+                        } else {
+                            if o1.len() <= o2.len() {
+                                w.insert(o1.clone());
+                            } else {
+                                w.insert(o2.clone());
+                            }
+                        }
+                    } else {
+                        p_prime.insert(y);
+                    }
+                }
+                p = p_prime;
+            }
+        }
+
+        // P is now a partition of the original states. Does not contain
+        // empty sets.
+        // All partition items are non-empty. We ensure to only
+        // add F and Q\F initially if they are non-empty and then
+        // this is kept as an invariant throughout Hopcroft's
+        // algorithm.
+        let mut state_to_partition_index = HashMap::new();
+        for (i, partition) in p.iter().enumerate() {
+            for s in partition.iter() {
+                state_to_partition_index.insert(s, i);
+            }
+        }
+
+        let mut min_transitions = BTreeMap::new();
+        for partition in p.iter() {
+            // arbitrary member.
+            let s = partition.iter().next().unwrap();
+            let p_s = state_to_partition_index.get(&s).unwrap();
+            let mut charmap = BTreeMap::new();
+            // All arrows from a (whatever member we pick and whatever
+            // the arrow points to, it will be consistent across
+            // equivalence classes)
+            for (c, t) in self.transitions.get(&s).unwrap().iter() {
+                let p_t = state_to_partition_index.get(&t).unwrap();
+                charmap.insert(*c, *p_t);
+            }
+
+            min_transitions.insert(*p_s, charmap);
+        }
+        let min_start = *state_to_partition_index.get(&self.start).unwrap();
+        let min_final = self.r#final.iter()
+            .map(|f| *state_to_partition_index.get(f).unwrap())
+            .collect::<BTreeSet<_>>();
+
+        Self {
+            transitions: min_transitions,
+            start: min_start,
+            r#final: min_final,
+        }
     }
 
     /// Completes the DFA. No guarantee in preserving minimality.
     pub fn complete(&mut self) {
-        let fresh = self.transitions.keys().max().unwrap() + 1;
+        let fresh = self.transitions.last_key_value().unwrap().0 + 1;
         let mut anything_happened = false;
         for char_to_state in self.transitions.values_mut() {
             for c in ALPHABET.iter() {
@@ -267,7 +435,7 @@ impl Dfa {
                 fresh,
                 ALPHABET.iter()
                     .map(|c| (*c, fresh))
-                    .collect::<HashMap<_, _>>());
+                    .collect::<BTreeMap<_, _>>());
         }
     }
 
@@ -277,7 +445,45 @@ impl Dfa {
     /// the state. Returns an Err iff the DFA has
     /// unreachable states.
     pub fn canonicalise(&self) -> Result<Dfa, ()> {
-        unimplemented!()
+        let mut transitions_cno = BTreeMap::new();
+        let mut visited = HashMap::new();
+        visited.insert(self.start, 0);
+        // queue = shortlex. stack = lexicographic
+        let mut queue = VecDeque::new();
+        queue.push_back((self.start, 0));
+        // cno = "canon"
+        while let Some((next, next_cno)) = queue.pop_front() {
+            let mut charmap_cno = BTreeMap::new();
+            // This works because the char to destination map is a BTreeMap
+            // and hence iteration occurs in alphabetical order (rather
+            // than random order like with a HashSet).
+            for (c,t) in self.transitions.get(&next).unwrap().iter() {
+                let v = visited.len();
+                let t_cno = visited.entry(*t)
+                    .or_insert_with(|| {
+                        queue.push_back((*t, v));
+                        v
+                    });
+
+                charmap_cno.insert(*c, *t_cno);
+            }
+
+            transitions_cno.insert(next_cno, charmap_cno);
+        }
+
+        if visited.len() != self.transitions.len() {
+            Err(())
+        } else {
+            let start_cno = *visited.get(&self.start).unwrap();
+            let final_cno = self.r#final.iter()
+                .map(|f| *visited.get(f).unwrap())
+                .collect::<BTreeSet<_>>();
+            Ok(Self {
+                transitions: transitions_cno,
+                start: start_cno,
+                r#final: final_cno,
+            })
+        }
     }
 
     fn product(
@@ -297,11 +503,12 @@ impl Dfa {
         // (Maybe we don't have to complete for R in R\S?)
         // The only difference is then in the final states
         // determination.
+        // TODO: make the queue a stack again?
 
         let s0 = (self.start, other.start);
         let mut visited = HashMap::new();
         visited.insert(s0, 0);
-        let mut transitions = HashMap::new();
+        let mut transitions = BTreeMap::new();
         let mut queue = VecDeque::new();
         queue.push_back(s0);
         while let Some(next) = queue.pop_front() {
@@ -319,7 +526,7 @@ impl Dfa {
                 (other_t, self_t)
             };
 
-            let mut m = HashMap::new();
+            let mut m = BTreeMap::new();
             for (c, min2) in min_t {
                 if let Some(max2) = max_t.get(&c) {
                     let (self2, other2) = if self_min {
@@ -353,67 +560,67 @@ impl Dfa {
                 } else {
                     None
                 })
-                .collect::<HashSet<_>>(),
+                .collect::<BTreeSet<_>>(),
         }
     }
 
     pub fn nothing() -> Self {
-        let mut transitions = HashMap::new();
-        transitions.insert(0, HashMap::new());
+        let mut transitions = BTreeMap::new();
+        transitions.insert(0, BTreeMap::new());
         Self {
             transitions,
             start: 0,
-            r#final: HashSet::new(),
+            r#final: BTreeSet::new(),
         }
     }
 
     pub fn all() -> Self {
         let zero_transitions = ALPHABET.iter()
             .map(|c| (*c, 0))
-            .collect::<HashMap<_, _>>();
-        let mut transitions = HashMap::new();
+            .collect::<BTreeMap<_, _>>();
+        let mut transitions = BTreeMap::new();
         transitions.insert(0, zero_transitions);
         Self {
             transitions,
             start: 0,
-            r#final: [0].into_iter().collect::<HashSet<_>>(),
+            r#final: [0].into_iter().collect::<BTreeSet<_>>(),
         }
     }
 
     pub fn emptystring() -> Self {
-        let mut transitions = HashMap::new();
-        transitions.insert(0, HashMap::new());
+        let mut transitions = BTreeMap::new();
+        transitions.insert(0, BTreeMap::new());
         Self {
             transitions,
             start: 0,
-            r#final: [0].into_iter().collect::<HashSet<_>>(),
+            r#final: [0].into_iter().collect::<BTreeSet<_>>(),
         }
     }
 
     pub fn anychar() -> Self {
         let zero_transitions = ALPHABET.iter()
             .map(|c| (*c, 1))
-            .collect::<HashMap<_, _>>();
-        let mut transitions = HashMap::new();
+            .collect::<BTreeMap<_, _>>();
+        let mut transitions = BTreeMap::new();
         transitions.insert(0, zero_transitions);
-        transitions.insert(1, HashMap::new());
+        transitions.insert(1, BTreeMap::new());
         Self {
             transitions,
             start: 0,
-            r#final: [1].into_iter().collect::<HashSet<_>>(),
+            r#final: [1].into_iter().collect::<BTreeSet<_>>(),
         }
     }
 
     pub fn lit(c: Char) -> Self {
         let zero_transition = [(c, 1)].into_iter()
-            .collect::<HashMap<_, _>>();
-        let mut transitions = HashMap::new();
+            .collect::<BTreeMap<_, _>>();
+        let mut transitions = BTreeMap::new();
         transitions.insert(0, zero_transition);
-        transitions.insert(1, HashMap::new());
+        transitions.insert(1, BTreeMap::new());
         Self {
             transitions,
             start: 0,
-            r#final: [1].into_iter().collect::<HashSet<_>>(),
+            r#final: [1].into_iter().collect::<BTreeSet<_>>(),
         }
     }
 
@@ -439,7 +646,7 @@ impl Dfa {
             } else {
                 Some(*k)
             })
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         self.r#final = new_final;
     }
 
@@ -553,10 +760,11 @@ mod test {
             Dfa::all(),
             Dfa::emptystring(),
             Dfa::anychar(),
-            Dfa::lit(*ALPHABET[7]),
+            Dfa::lit(ALPHABET[7]),
         ];
         for base_case in base_cases {
-            let canon_min = base_case.minimise().canonicalise().unwrap();
+            let canon_min = base_case.clone()
+                .minimise().canonicalise().unwrap();
             assert_eq!(base_case, canon_min);
         }
     }
