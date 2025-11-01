@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque, BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write;
 
-// tod impl debug/display char based
-
-/// A-Z, a-z, 0-9. 0xFF is reserved as epsilon transition.
+/// Just a-z for now. 0xFF is reserved as epsilon transition.
 #[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Char(u8);
 
@@ -99,7 +97,7 @@ pub enum GenRegex {
 }
 
 impl GenRegex {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_postfix_str(s: &str) -> Option<Self> {
         fn match1(
             stack: &mut Vec<GenRegex>,
             f: impl Fn(Box<GenRegex>) -> GenRegex,
@@ -161,7 +159,7 @@ impl GenRegex {
 
 
 
-    pub fn to_min_canon_dfa(&self) -> Dfa {
+    pub fn to_canon_min_dfa(&self) -> Dfa {
         let d = self.to_min_dfa_inner();
         // Minimality implies all states are reachable and hence
         // canonicalisation will always work
@@ -223,15 +221,6 @@ pub struct Dfa {
 }
 
 impl Dfa {
-    /// Returns a minimal DFA through:
-    /// 1. Remove unreachable states
-    /// 2. Remove dead states
-    /// 3. Minimise with Hopcroft's algorithm.
-    /// The result will be an incomplete DFA in general. There is also
-    /// no guarantee on consistency of state labels. However by the
-    /// Myhill-Nerode theorem the min DFA is unique up to isomorphism.
-    /// Takes ownership to use the DFA as scratch space, rendering
-    /// it garbage.
     pub fn minimise(mut self) -> Self {
         // 1. remove unreachable states.
         let mut visited = HashSet::new();
@@ -865,7 +854,7 @@ impl Dfa {
     }
 
     // Show ascii art style
-    pub fn show(&self, printstartstate: bool) -> String {
+    pub fn show(&self, print_start_state: bool) -> String {
         let mut result = String::new();
         let num_width = format!(
             "{}",
@@ -873,8 +862,8 @@ impl Dfa {
         ).len();
         let alphasubset = self.chars_used();
 
-        if printstartstate {
-            write!(result, "BTW THE START STATE IS {}\n", self.start).unwrap();
+        if print_start_state {
+            write!(result, "Start state: {}\n", self.start).unwrap();
         }
 
         result.push_str("┏━━━");

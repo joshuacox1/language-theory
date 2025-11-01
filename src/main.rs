@@ -8,18 +8,15 @@
 use std::io;
 
 fn main() -> io::Result<()> {
-    use contextfree::genregexp::*;
+    // use contextfree::genregexp::*;
 
     let mut buffer = String::new();
     loop {
         io::stdin().read_line(&mut buffer)?;
 
-        match GenRegex::from_str(&buffer) {
-            Some(r) => {
-                let d = r.to_min_canon_dfa();
-                println!("{}", d.show(false));
-            }
-            None => println!("Parsing error :("),
+        match contextfree::to_min_dfa_html(&buffer) {
+            Ok(s) => println!("{s}"),
+            Err(_) => println!("Parsing error :("),
         }
 
         buffer.clear();
