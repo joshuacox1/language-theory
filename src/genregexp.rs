@@ -16,9 +16,9 @@ impl Char {
             None
         }
     }
-
-    pub const EPSILON: Char = Char(0xFF);
 }
+
+const EPSILON: Char = Char(0xFF);
 
 impl fmt::Debug for Char {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -176,16 +176,20 @@ impl GenRegex {
             GenRegex::AnyChar => Dfa::anychar(),
             GenRegex::Lit(c) => Dfa::lit(*c),
             GenRegex::Star(r) => r.to_min_dfa_inner().star().minimise(),
-            GenRegex::Opt(r) => r.to_min_dfa_inner().opt().minimise(),
+            GenRegex::Opt(r) => {
+                let mut d = r.to_min_dfa_inner();
+                d.opt();
+                d.minimise()
+            }
             GenRegex::Plus(r) => r.to_min_dfa_inner().plus().minimise(),
             GenRegex::Complement(r) => {
                 // Can be done in-place efficiently so why not
                 let mut d = r.to_min_dfa_inner();
                 d.complement();
-                d
+                d.minimise()
             }
             GenRegex::Concat(r, s) => r.to_min_dfa_inner()
-                .concat(&s.to_min_dfa_inner()).minimise(),
+                .concat(s.to_min_dfa_inner()).minimise(),
             GenRegex::Union(r, s) => r.to_min_dfa_inner()
                 .union(&mut s.to_min_dfa_inner()).minimise(),
             GenRegex::Intersect(r, s) => r.to_min_dfa_inner()
@@ -219,24 +223,6 @@ pub struct Dfa {
 }
 
 impl Dfa {
-    fn debug_validate_dfa(&self) {
-        if cfg!(debug_assertions) {
-            for charmap in self.transitions.values() {
-                for (c,t) in charmap.iter() {
-                    // No epsilons eiher.
-                    debug_assert!((c.0 as char).is_ascii_lowercase());
-                    debug_assert!(self.transitions.contains_key(&t));
-                }
-            }
-
-            debug_assert!(self.transitions.contains_key(&self.start));
-            for f in self.r#final.iter() {
-                debug_assert!(self.transitions.contains_key(f));
-            }
-        }
-    }
-
-
     /// Returns a minimal DFA through:
     /// 1. Remove unreachable states
     /// 2. Remove dead states
@@ -286,7 +272,7 @@ impl Dfa {
         }
 
         // 2. remove dead states other than the start state.
-        // we can obtain liveness by graph searching reversed arrows
+        // we can obtain liveness by gra6ph searching reversed arrows
         // starting from each final state.
         // Let's reuse the visited set from part 1.
         visited.remove(&self.start);
@@ -317,6 +303,11 @@ impl Dfa {
             }
             ok
         });
+
+        // Optimisation: if self has length 1, it is already minimal
+        if self.transitions.len() == 1 {
+            return self.clone();
+        }
 
         // 3. Hopcroft's algorithm
         // TODO. This is a relatively naive implementation of
@@ -633,16 +624,160 @@ impl Dfa {
         }
     }
 
-    pub fn star(&self) -> Self {
-        unimplemented!()
+    fn close_single<'a>(
+        &self,
+        single_eps_closures: &'a mut HashMap<usize, BTreeSet<usize>>,
+        state: usize,
+    ) -> &'a BTreeSet<usize> {
+        // Could do something cleverer here.
+        single_eps_closures.entry(state)
+            .or_insert_with(|| {
+                let mut visited = BTreeSet::new();
+                visited.insert(state);
+                let mut stack = vec![state];
+                while let Some(next) = stack.pop() {
+                    let charmap = self.transitions.get(&next).unwrap();
+                    // The way we do it, every state has at most one
+                    // epsilon transition coming out of it. So this
+                    // is enough.
+                    if let Some(t) = charmap.get(&EPSILON) {
+                        if visited.insert(*t) {
+                            stack.push(*t);
+                        }
+                    }
+                }
+                visited
+            });
+        single_eps_closures.get(&state).unwrap()
     }
 
-    pub fn opt(&self) -> Self {
-        unimplemented!()
+    fn close_mult<'a>(
+        &self,
+        single_eps_closures: &mut HashMap<usize, BTreeSet<usize>>,
+        eps_closures: &'a mut HashMap<BTreeSet<usize>, BTreeSet<usize>>,
+        states: &BTreeSet<usize>,
+    ) -> &'a BTreeSet<usize> {
+        if !eps_closures.contains_key(&states) {
+            let mut new_epscl = BTreeSet::new();
+            for s in states.iter() {
+                for t in self.close_single(single_eps_closures, *s) {
+                    new_epscl.insert(*t);
+                }
+            }
+            eps_closures.insert(states.clone(), new_epscl);
+        }
+        eps_closures.get(states).unwrap()
     }
 
-    pub fn plus(&self) -> Self {
-        unimplemented!()
+    // Subset construction of an NFA.
+    fn subset(&self) -> Self {
+        let mut single_eps_closures: HashMap<usize, BTreeSet<usize>>
+            = HashMap::new();
+        let mut eps_closures:
+            HashMap<BTreeSet<usize>, BTreeSet<usize>> = HashMap::new();
+
+        let mut visited = HashMap::new();
+        let mut transitions = BTreeMap::new();
+
+        let start_closed = self.close_single(
+            &mut single_eps_closures, self.start);
+        let mut stack = vec![(start_closed.clone(), 0)];
+        visited.insert(start_closed.clone(), 0);
+
+        while let Some((next, next_idx)) = stack.pop() {
+            // For this epsilon-closed subset compute the destination
+            // subset from transitions by each character.
+            let mut destinations = HashMap::new();
+            for s in next.iter() {
+                for (c, t) in self.transitions.get(s).unwrap() {
+                    if *c != EPSILON {
+                        destinations.entry(*c)
+                            .and_modify(|b: &mut BTreeSet<usize>| {
+                                b.insert(*t);
+                            })
+                            .or_insert_with(|| {
+                                let mut b = BTreeSet::new();
+                                b.insert(*t);
+                                b
+                            });
+                    }
+                }
+            }
+
+            // Epsilon close each destination subset and add an
+            // edge from this by the given character to that. If this
+            // is not in the epsilon closure cache it is a new
+            // DFA state and it should be added to the stack.
+            let mut this_c_trans = BTreeMap::new();
+            for (c, dest) in &destinations {
+                let dest_epscl = self.close_mult(
+                    &mut single_eps_closures,
+                    &mut eps_closures,
+                    &dest);
+                let dest_epscl_idx = match visited.get(dest_epscl) {
+                    Some(idx) => *idx,
+                    None => {
+                        let idx = visited.len();
+                        visited.insert(dest_epscl.clone(), idx);
+                        stack.push((dest_epscl.clone(), idx));
+                        idx
+                    },
+                };
+                this_c_trans.insert(*c, dest_epscl_idx);
+            }
+            transitions.insert(next_idx, this_c_trans);
+        }
+
+        let final_states = visited.iter()
+            .filter_map(|(subset, idx)| {
+                if !subset.is_disjoint(&self.r#final) {
+                    Some(*idx)
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+
+        Self {
+            transitions,
+            start: 0,
+            r#final: final_states,
+        }
+    }
+
+    pub fn star(self) -> Self {
+        let mut p = self.plus();
+        p.opt();
+        p
+    }//ab|*a,ab|,ab|,ab|,ab|,ab|,ab|,
+
+    pub fn opt(&mut self) {
+        if self.r#final.contains(&self.start) {
+            return;
+        }
+
+        let fresh = *self.transitions.last_key_value().unwrap().0 + 1;
+        let start_trans = self.transitions.get(&self.start).unwrap()
+            .clone();
+        self.transitions.insert(fresh, start_trans);
+        self.r#final.insert(fresh);
+        self.start = fresh;
+    }
+
+    pub fn plus(mut self) -> Self {
+        // Add epsilon transitions from every final state
+        // to the start state. Optimisation: if there are no final
+        // states, just return straight away.
+        if self.r#final.is_empty() {
+            return self.clone();
+        }
+
+        for f in self.r#final.iter() {
+            self.transitions.get_mut(f).unwrap()
+                .insert(EPSILON, self.start);
+        }
+
+        self.subset()
     }
 
     /// Modifies the DFA so it recognises the complement of the
@@ -659,8 +794,40 @@ impl Dfa {
         self.r#final = new_final;
     }
 
-    pub fn concat(&self, other: &Self) -> Self {
-        unimplemented!()
+    pub fn concat(mut self, other: Self) -> Self {
+        // Optimisation: if self has no final states then return nothing
+        if self.r#final.len() == 0 {
+            return Self::nothing();
+        }
+
+        // Ensure node labels don't clash by adjusting other's labels
+        let self_max = self.transitions.last_key_value().unwrap().0;
+        let other_min = other.transitions.first_key_value().unwrap().0;
+        let other_offset = if self_max >= other_min {
+            self_max - other_min + 1
+        } else {
+            0
+        };
+
+        for (s, charmap) in other.transitions.iter() {
+            let mut charmap_ext = BTreeMap::new();
+            for (c, t) in charmap.iter() {
+                charmap_ext.insert(*c, *t + other_offset);
+            }
+            self.transitions.insert(*s + other_offset, charmap_ext);
+        }
+
+        // Epsilon transitions from self's final states to other's start
+        for f in self.r#final.iter() {
+            self.transitions.get_mut(f).unwrap()
+                .insert(EPSILON, other.start + other_offset);
+        }
+
+        self.r#final = other.r#final.into_iter()
+            .map(|f| f + other_offset)
+            .collect::<BTreeSet<_>>();
+
+        self.subset()
     }
 
     pub fn union(&mut self, other: &mut Self) -> Self {
@@ -687,12 +854,16 @@ impl Dfa {
     }
 
     // Show ascii art style
-    pub fn show(&self) -> String {
+    pub fn show(&self, printstartstate: bool) -> String {
         let mut result = String::new();
-        // Let it be in any order, I suppose.
-        let num_width = 1; // todo: make it fit
+        let num_width = format!(
+            "{}",
+            self.transitions.last_key_value().unwrap().0,
+        ).len();
 
-        write!(result, "BTW THE START STATE IS {}\n", self.start).unwrap();
+        if printstartstate {
+            write!(result, "BTW THE START STATE IS {}\n", self.start).unwrap();
+        }
 
         result.push_str("┏━━━");
         for _ in 0..num_width {
@@ -702,15 +873,19 @@ impl Dfa {
         for _ in 0..(ALPHABET.len()*(num_width+1)) {
             result.push('━');
         }
-        result.push_str("┓\n┃ ! ");
-        for _ in 0..num_width {
-            result.push('#');
-        }
+        result.push_str("┓\n┃ F ");
+        // for _ in 1..num_width {
+        // }
+        write!(result, "{:>num_width$}", "#").unwrap();
+        // result.push('#');
         result.push_str(" │ ");
         for c in ALPHABET.iter() {
+            for _ in 1..num_width {
+                result.push(' ');
+            }
             write!(result, "{c} ").unwrap();
         }
-        result.push_str("┃\n┠─────┼─");
+        write!(result, "┃\n┠{:─>w$}┼─", "", w = num_width + 4).unwrap();
         for _ in 0..(ALPHABET.len()*(num_width+1)) {
             result.push('─');
         }
@@ -720,9 +895,10 @@ impl Dfa {
         // only showing canonicalised where start=0
         for (state, charmap) in self.transitions.iter() {
             let is_final = if self.r#final.contains(&state) {
-                "*"
+                "<span class=\"dot\">*</span>"
             } else {
-                "-"
+                // Is this an en dash?
+                "<span class=\"ipt\">-</span>"
             };
             write!(result, "┃ {is_final} {state:>w$} │ ", w = num_width)
                 .unwrap();
@@ -736,7 +912,7 @@ impl Dfa {
                         for _ in 0..(num_width-1) {
                             result.push(' ');
                         }
-                        result.push('.');
+                        result.push_str("<span class=\"ipt\">·</span>");
                         result.push(' ');
                     }
                 }
