@@ -853,6 +853,17 @@ impl Dfa {
         self.product(other, |a, b| a != b)
     }
 
+    fn chars_used(&self) -> BTreeSet<Char> {
+        let mut result = BTreeSet::new();
+        for charmap in self.transitions.values() {
+            for c in charmap.keys() {
+                result.insert(*c);
+            }
+        }
+
+        result
+    }
+
     // Show ascii art style
     pub fn show(&self, printstartstate: bool) -> String {
         let mut result = String::new();
@@ -860,6 +871,7 @@ impl Dfa {
             "{}",
             self.transitions.last_key_value().unwrap().0,
         ).len();
+        let alphasubset = self.chars_used();
 
         if printstartstate {
             write!(result, "BTW THE START STATE IS {}\n", self.start).unwrap();
@@ -870,7 +882,7 @@ impl Dfa {
             result.push('━');
         }
         result.push_str("━┯━");
-        for _ in 0..(ALPHABET.len()*(num_width+1)) {
+        for _ in 0..(alphasubset.len()*(num_width+1)) {
             result.push('━');
         }
         result.push_str("┓\n┃ F ");
@@ -879,14 +891,14 @@ impl Dfa {
         write!(result, "{:>num_width$}", "#").unwrap();
         // result.push('#');
         result.push_str(" │ ");
-        for c in ALPHABET.iter() {
+        for c in alphasubset.iter() {
             for _ in 1..num_width {
                 result.push(' ');
             }
             write!(result, "{c} ").unwrap();
         }
         write!(result, "┃\n┠{:─>w$}┼─", "", w = num_width + 4).unwrap();
-        for _ in 0..(ALPHABET.len()*(num_width+1)) {
+        for _ in 0..(alphasubset.len()*(num_width+1)) {
             result.push('─');
         }
         result.push_str("┨\n");
@@ -902,7 +914,7 @@ impl Dfa {
             };
             write!(result, "┃ {is_final} {state:>w$} │ ", w = num_width)
                 .unwrap();
-            for c in ALPHABET.iter() {
+            for c in alphasubset.iter() {
                 match charmap.get(c) {
                     Some(target) => write!(
                         result,
@@ -924,7 +936,7 @@ impl Dfa {
             result.push('━');
         }
         result.push_str("━┷━");
-        for _ in 0..(ALPHABET.len()*(num_width+1)) {
+        for _ in 0..(alphasubset.len()*(num_width+1)) {
             result.push('━');
         }
         result.push('┛');
