@@ -1,8 +1,23 @@
+# [package]
+# name = "contextfree"
+# version = "0.1.0"
+# edition = "2024"
+
+# [dependencies]
+# arrayvec = "0.7.6"
+# bit-set = "0.8.0"
+
 [package]
 name = "contextfree"
 version = "0.1.0"
 edition = "2024"
+# authors = ["Your Name <you@example.com>"]
+# description = "A sample project with wasm-pack"
+# license = "MIT/Apache-2.0"
+# repository = "https://github.com/yourgithubusername/hello-wasm"
+
+[lib]
+crate-type = ["cdylib"]
 
 [dependencies]
-arrayvec = "0.7.6"
-bit-set = "0.8.0"
+wasm-bindgen = "0.2"
