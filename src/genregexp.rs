@@ -853,6 +853,25 @@ impl Dfa {
         result
     }
 
+    pub fn accept(&self, input: &str) -> bool {
+        let mut current = self.start;
+        for c in input.chars() {
+            if let Some(c) = Char::from_char(c) {
+                let charmap = self.transitions.get(&current).unwrap();
+                match charmap.get(&c) {
+                    Some(next) => {
+                        current = *next;
+                    },
+                    None => return false,
+                }
+            } else {
+                return false;
+            }
+        }
+
+        self.r#final.contains(&current)
+    }
+
     // Show ascii art style
     pub fn show(&self, print_start_state: bool) -> String {
         let mut result = String::new();
@@ -931,6 +950,46 @@ impl Dfa {
         result.push('┛');
 
         result
+    }
+
+    pub fn accept_many_html<'a>(&self, inputs: &[&'a str]) -> String {
+        let mut result = String::new();
+        // length of INPUT plus 1
+        let l = 6usize.max(inputs.iter().map(|s| s.len()).max().unwrap_or(0usize));
+        result.push_str("┏━");
+        for _ in 0..l {
+            result.push('━');
+        }
+        write!(result,
+            "━┯━━━━━━━━━┓\n┃ <span class=\"sc\">Input</span>{:>ldiff$} │ <span class=\"sc\">Accept?</span> ┃\n┠─",
+            "", ldiff = l-5).unwrap();
+        for _ in 0..l {
+            result.push('─');
+        }
+        result.push_str("─┼─────────┨\n");
+        for s in inputs {
+            let accepted = self.accept(s);
+            let acc_str = if accepted {
+                "<span class=\"dot\">*</span>"
+            } else {
+                "<span class=\"ipt\">-</span>"
+            };
+            write!(result, "┃ {s:<l$} │    {acc_str}    ┃\n").unwrap();
+        }
+        write!(result, "┗━{:━<l$}━┷━━━━━━━━━┛", "").unwrap();
+        result
+        // ┏━━━━━━━━┯━━━━━━━━━┓
+        // ┃ <span class="sc">Input</span>  │ <span class="sc">Accept?</span> ┃
+        // ┠────────┼─────────┨
+        // ┃ ab     │    <span class="dot">*</span>    ┃
+        // ┃ abb    │    <span class="ipt">-</span>    ┃
+        // ┃ aab    │    <span class="ipt">-</span>    ┃
+        // ┃ abbab  │    <span class="ipt">-</span>    ┃
+        // ┃ a      │    <span class="ipt">-</span>    ┃
+        // ┃ b      │    <span class="ipt">-</span>    ┃
+        // ┃        │    <span class="ipt">-</span>    ┃
+        // ┃ babab  │    <span class="ipt">-</span>    ┃
+        // ┗━━━━━━━━┷━━━━━━━━━┛
     }
 }
 
